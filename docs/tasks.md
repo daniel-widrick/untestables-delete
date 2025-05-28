@@ -41,7 +41,7 @@ This document outlines the requirements for an application designed to identify 
 
 ### **Reporting on Missing Tests**
 
-- [ ] Flag repositories where unit testing frameworks and configurations are absent.
+- [x] Flag repositories where unit testing frameworks and configurations are absent
 - [ ] Maintain a structured list of repositories needing unit tests.
 
 ## **3. Data Processing & Output**

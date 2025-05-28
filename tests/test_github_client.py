@@ -172,13 +172,25 @@ def test_store_repository_metadata(mock_github):
         "star_count": 100,
         "url": "https://github.com/owner/test-repo"
     }
-    client.store_repository_metadata(metadata)
+    missing = {
+        "test_directories": False,
+        "test_files": False,
+        "test_config_files": False,
+        "cicd_configs": False,
+        "readme_mentions": False
+    }
+    client.store_repository_metadata(metadata, missing)
     session = Session(bind=client.engine)
     repo = session.query(Repository).filter_by(name="test-repo").first()
     assert repo is not None
     assert repo.description == "A test repository"
     assert repo.star_count == 100
     assert repo.url == "https://github.com/owner/test-repo"
+    assert repo.missing_test_directories is False
+    assert repo.missing_test_files is False
+    assert repo.missing_test_config_files is False
+    assert repo.missing_cicd_configs is False
+    assert repo.missing_readme_mentions is False
     session.close()
 
 def test_check_test_directories_exists(mock_github):
@@ -428,4 +440,79 @@ def test_flag_missing_tests_all_absent(mock_github):
 
     client = GitHubClient(token="test_token")
     missing = client.flag_missing_tests("owner/repo")
-    assert all(missing.values()) 
+    assert all(missing.values())
+
+def test_store_missing_tests_new_repo(mock_github):
+    """Test storing missing test information for a new repository record."""
+    mock_repo = MagicMock()
+    mock_repo.name = "test-repo"
+    mock_repo.description = "A test repository"
+    mock_repo.stargazers_count = 100
+    mock_repo.html_url = "https://github.com/owner/test-repo"
+    mock_github.return_value.get_repo.return_value = mock_repo
+
+    client = GitHubClient(token="test_token", db_url="sqlite:///:memory:")
+    missing = {
+        "test_directories": True,
+        "test_files": False,
+        "test_config_files": True,
+        "cicd_configs": False,
+        "readme_mentions": True
+    }
+    client.store_missing_tests("owner/test-repo", missing)
+
+    session = Session(bind=client.engine)
+    repo = session.query(Repository).filter_by(name="test-repo").first()
+    assert repo is not None
+    assert repo.missing_test_directories is True
+    assert repo.missing_test_files is False
+    assert repo.missing_test_config_files is True
+    assert repo.missing_cicd_configs is False
+    assert repo.missing_readme_mentions is True
+    session.close()
+
+def test_store_missing_tests_existing_repo(mock_github):
+    """Test updating missing test information for an existing repository record."""
+    mock_repo = MagicMock()
+    mock_repo.name = "test-repo"
+    mock_repo.description = "A test repository"
+    mock_repo.stargazers_count = 100
+    mock_repo.html_url = "https://github.com/owner/test-repo"
+    mock_github.return_value.get_repo.return_value = mock_repo
+
+    client = GitHubClient(token="test_token", db_url="sqlite:///:memory:")
+    # First, create a record
+    metadata = {
+        "name": "test-repo",
+        "description": "A test repository",
+        "star_count": 100,
+        "url": "https://github.com/owner/test-repo"
+    }
+    missing = {
+        "test_directories": False,
+        "test_files": False,
+        "test_config_files": False,
+        "cicd_configs": False,
+        "readme_mentions": False
+    }
+    client.store_repository_metadata(metadata, missing)
+
+    # Now update the missing test information
+    missing = {
+        "test_directories": False,
+        "test_files": True,
+        "test_config_files": False,
+        "cicd_configs": True,
+        "readme_mentions": False
+    }
+    client.store_missing_tests("owner/test-repo", missing)
+
+    session = Session(bind=client.engine)
+    repo = session.query(Repository).filter_by(name="test-repo").first()
+    assert repo is not None
+    assert repo.missing_test_directories is False
+    assert repo.missing_test_files is True
+    assert repo.missing_test_config_files is False
+    assert repo.missing_cicd_configs is True
+    assert repo.missing_readme_mentions is False
+    session.close() 

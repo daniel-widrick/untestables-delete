@@ -4,7 +4,7 @@ from typing import Optional
 from github import Github
 from github.GithubException import GithubException
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, Column, Integer, String, Text
+from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -21,6 +21,11 @@ class Repository(Base):
     description = Column(Text, nullable=True)
     star_count = Column(Integer, nullable=False)
     url = Column(String(255), nullable=False)
+    missing_test_directories = Column(Boolean, nullable=False)
+    missing_test_files = Column(Boolean, nullable=False)
+    missing_test_config_files = Column(Boolean, nullable=False)
+    missing_cicd_configs = Column(Boolean, nullable=False)
+    missing_readme_mentions = Column(Boolean, nullable=False)
 
 class GitHubClient:
     """Client for interacting with the GitHub API."""
@@ -138,13 +143,19 @@ class GitHubClient:
             "url": repo.html_url
         } 
 
-    def store_repository_metadata(self, metadata: dict) -> None:
+    def store_repository_metadata(self, metadata: dict, missing: dict) -> None:
         """Store repository metadata in the database.
         Args:
             metadata: Dictionary containing repository metadata.
+            missing: Dictionary indicating which test components are missing, as returned by flag_missing_tests.
         """
         session = self.Session()
         repo = Repository(**metadata)
+        repo.missing_test_directories = missing.get("test_directories", False)
+        repo.missing_test_files = missing.get("test_files", False)
+        repo.missing_test_config_files = missing.get("test_config_files", False)
+        repo.missing_cicd_configs = missing.get("cicd_configs", False)
+        repo.missing_readme_mentions = missing.get("readme_mentions", False)
         session.add(repo)
         session.commit()
         session.close() 
@@ -274,3 +285,29 @@ class GitHubClient:
             "readme_mentions": not self.check_readme_for_test_frameworks(repo_name)
         }
         return missing 
+
+    def store_missing_tests(self, repo_name: str, missing: dict) -> None:
+        """Store information about missing test components for a repository in the database.
+        Args:
+            repo_name: The name of the repository (e.g., 'owner/repo').
+            missing: A dictionary indicating which test components are missing, as returned by flag_missing_tests.
+        """
+        session = self.Session()
+        # Extract just the repository name from owner/repo format
+        repo_name_only = repo_name.split('/')[-1]
+        repo = session.query(Repository).filter_by(name=repo_name_only).first()
+        if not repo:
+            # If the repository doesn't exist in the database, create a new record
+            metadata = self.get_repository_metadata(repo_name)
+            repo = Repository(**metadata)
+            session.add(repo)
+        # Update the record with missing test information
+        repo.missing_test_directories = missing.get("test_directories", False)
+        repo.missing_test_files = missing.get("test_files", False)
+        repo.missing_test_config_files = missing.get("test_config_files", False)
+        repo.missing_cicd_configs = missing.get("cicd_configs", False)
+        repo.missing_readme_mentions = missing.get("readme_mentions", False)
+        print(f"Updating repo {repo_name_only} with missing test info: {missing}")
+        session.flush()
+        session.commit()
+        session.close() 
