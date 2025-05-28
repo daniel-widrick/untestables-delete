@@ -168,11 +168,20 @@ class GitHubClient:
             # Fetch the current page of results
             logger.debug(f"Fetching page {page}")
             response = self.client.search_repositories(query=query, page=page)
-            if not response:
+            if not response or response.totalCount == 0:
                 break
-            results.extend(response)
-            logger.debug(f"Found {len(response)} results on page {page}")
+                
+            # Convert PaginatedList to list and extend results
+            page_results = list(response)
+            results.extend(page_results)
+            logger.debug(f"Found {len(page_results)} results on page {page}")
+            
+            # Check if we've reached the end
+            if len(page_results) < 30:  # GitHub's default page size
+                break
+                
             page += 1
+            
         logger.info(f"Total results found: {len(results)}")
         return results 
 
