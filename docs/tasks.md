@@ -31,12 +31,12 @@ This document outlines the requirements for an application designed to identify 
 ### **Detecting Test Files & Directories**
 
 - [x] Check for the existence of common unit test directories: tests/, test/.
-- [ ] Identify common unit test files (test\_\*.py, \*\_test.py).
-- [ ] Scan for configuration files related to testing (pytest.ini, tox.ini, nose.cfg).
+- [x] Identify common unit test files (test\_\*.py, \*\_test.py).
+- [x] Scan for configuration files related to testing (pytest.ini, tox.ini, nose.cfg).
 
 ### **README & Project Metadata Analysis**
 
-- [ ] Search repository README for mentions of testing frameworks (pytest, unittest, nose).
+- [x] Search repository README for mentions of testing frameworks (pytest, unittest, nose).
 - [ ] Detect CI/CD configurations related to testing (GitHub Actions, Travis CI).
 
 ### **Reporting on Missing Tests**

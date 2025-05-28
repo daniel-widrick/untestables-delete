@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from untestables.github.client import GitHubClient, RateLimitExceeded, Repository
 from sqlalchemy.orm import Session
+from github.GithubException import GithubException
 
 @pytest.fixture
 def mock_github():
@@ -58,7 +59,6 @@ def test_test_connection_success(mock_github):
 
 def test_test_connection_failure(mock_github):
     """Test failed connection test."""
-    from github.GithubException import GithubException
     mock_github.return_value.get_user.side_effect = GithubException(401, "Bad credentials")
     
     client = GitHubClient(token="test_token")
@@ -158,7 +158,6 @@ def test_get_repository_metadata(mock_github):
 
 def test_get_repository_metadata_not_found(mock_github):
     """Test that get_repository_metadata handles repository not found gracefully."""
-    from github.GithubException import GithubException
     mock_github.return_value.get_repo.side_effect = GithubException(404, "Not Found")
     client = GitHubClient(token="test_token")
     with pytest.raises(GithubException):
@@ -302,4 +301,72 @@ def test_check_test_files_test_dir(mock_github):
     mock_repo.get_contents.side_effect = [mock_contents, [mock_test_file]]
     mock_github.return_value.get_repo.return_value = mock_repo
     client = GitHubClient(token="test_token")
-    assert client.check_test_files("owner/repo") is True 
+    assert client.check_test_files("owner/repo") is True
+
+def test_check_test_config_files_exists(mock_github):
+    """Test detection of test configuration files at root."""
+    mock_repo = MagicMock()
+    mock_config_file = MagicMock()
+    mock_config_file.name = "pytest.ini"
+    mock_config_file.type = "file"
+    mock_contents = [mock_config_file]
+    mock_repo.get_contents.return_value = mock_contents
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_test_config_files("owner/repo") is True
+
+def test_check_test_config_files_not_exists(mock_github):
+    """Test that check_test_config_files returns False when no config files exist."""
+    mock_repo = MagicMock()
+    mock_contents = [MagicMock(name="README.md", type="file")]
+    mock_repo.get_contents.return_value = mock_contents
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_test_config_files("owner/repo") is False
+
+def test_check_readme_for_test_frameworks_exists(mock_github):
+    """Test detection of testing framework mentions in README."""
+    mock_repo = MagicMock()
+    mock_readme = MagicMock()
+    mock_readme.decoded_content = b"This project uses pytest for testing."
+    mock_repo.get_readme.return_value = mock_readme
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_readme_for_test_frameworks("owner/repo") is True
+
+def test_check_readme_for_test_frameworks_not_exists(mock_github):
+    """Test that check_readme_for_test_frameworks returns False when no frameworks are mentioned."""
+    mock_repo = MagicMock()
+    mock_readme = MagicMock()
+    mock_readme.decoded_content = b"This project has no tests."
+    mock_repo.get_readme.return_value = mock_readme
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_readme_for_test_frameworks("owner/repo") is False
+
+def test_check_readme_for_test_frameworks_readme_not_found(mock_github):
+    """Test that check_readme_for_test_frameworks returns False when README is not found."""
+    mock_repo = MagicMock()
+    mock_repo.get_readme.side_effect = GithubException(404, "Not Found")
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_readme_for_test_frameworks("owner/repo") is False
+
+def test_check_cicd_configs_exists(mock_github):
+    """Test detection of CI/CD configurations."""
+    mock_repo = MagicMock()
+    mock_github_actions = MagicMock()
+    mock_github_actions.name = "test.yml"
+    mock_github_actions.type = "file"
+    mock_repo.get_contents.return_value = [mock_github_actions]
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_cicd_configs("owner/repo") is True
+
+def test_check_cicd_configs_not_exists(mock_github):
+    """Test that check_cicd_configs returns False when no CI/CD configurations exist."""
+    mock_repo = MagicMock()
+    mock_repo.get_contents.side_effect = GithubException(404, "Not Found")
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_cicd_configs("owner/repo") is False 

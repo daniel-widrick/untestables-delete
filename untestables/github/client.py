@@ -198,3 +198,54 @@ class GitHubClient:
                 if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in test_contents if content.type == "file"):
                     return True
         return False 
+
+    def check_test_config_files(self, repo_name: str) -> bool:
+        """Scan for configuration files related to testing in the root directory.
+        Args:
+            repo_name: The name of the repository (e.g., 'owner/repo').
+        Returns:
+            bool: True if test configuration files exist, False otherwise.
+        """
+        repo = self.client.get_repo(repo_name)
+        config_files = ["pytest.ini", "tox.ini", "nose.cfg"]
+        contents = repo.get_contents("")
+        return any(content.name in config_files and content.type == "file" for content in contents) 
+
+    def check_readme_for_test_frameworks(self, repo_name: str) -> bool:
+        """Search the repository README for mentions of testing frameworks.
+        Args:
+            repo_name: The name of the repository (e.g., 'owner/repo').
+        Returns:
+            bool: True if testing frameworks are mentioned, False otherwise.
+        """
+        repo = self.client.get_repo(repo_name)
+        try:
+            readme = repo.get_readme()
+            readme_content = readme.decoded_content.decode("utf-8").lower()
+            test_frameworks = ["pytest", "unittest", "nose"]
+            return any(framework in readme_content for framework in test_frameworks)
+        except GithubException:
+            return False 
+
+    def check_cicd_configs(self, repo_name: str) -> bool:
+        """Detect CI/CD configurations related to testing in the repository.
+        Args:
+            repo_name: The name of the repository (e.g., 'owner/repo').
+        Returns:
+            bool: True if CI/CD configurations exist, False otherwise.
+        """
+        repo = self.client.get_repo(repo_name)
+        cicd_files = [
+            ".github/workflows/*.yml",  # GitHub Actions
+            ".travis.yml",              # Travis CI
+            "Jenkinsfile",              # Jenkins
+            "teamcity.yml"              # TeamCity
+        ]
+        for file_pattern in cicd_files:
+            try:
+                contents = repo.get_contents(file_pattern)
+                if contents:
+                    return True
+            except GithubException:
+                continue
+        return False 
