@@ -6,10 +6,11 @@ from typing import Optional, Callable, Any
 from github import Github
 from github.GithubException import GithubException, RateLimitExceededException
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from common.logging import setup_logging, get_logger
+from datetime import datetime, timedelta
 
 # Set up logging for this module
 setup_logging()
@@ -72,6 +73,7 @@ class Repository(Base):
     missing_test_config_files = Column(Boolean, nullable=False)
     missing_cicd_configs = Column(Boolean, nullable=False)
     missing_readme_mentions = Column(Boolean, nullable=False)
+    last_scanned_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 class GitHubClient:
     """Client for interacting with the GitHub API."""
@@ -238,10 +240,11 @@ class GitHubClient:
         repo.missing_test_config_files = missing.get("test_config_files", False)
         repo.missing_cicd_configs = missing.get("cicd_configs", False)
         repo.missing_readme_mentions = missing.get("readme_mentions", False)
+        repo.last_scanned_at = datetime.utcnow()
         session.add(repo)
         session.commit()
         logger.debug(f"Stored repository data: {metadata['name']} with missing components: {missing}")
-        session.close() 
+        session.close()
 
     @retry_on_failure()
     def check_test_directories(self, repo_name: str) -> bool:
@@ -421,3 +424,23 @@ class GitHubClient:
         session.flush()
         session.commit()
         session.close() 
+
+    def get_recently_scanned_repos(self, days: int = None) -> list:
+        """Get a list of repositories that have been scanned within the specified time period.
+        Args:
+            days: Number of days to look back. If None, returns all scanned repositories.
+        Returns:
+            list: List of repository names that have been scanned.
+        """
+        logger.info(f"Getting recently scanned repositories (days={days})")
+        session = self.Session()
+        query = session.query(Repository.name)
+        
+        if days is not None:
+            cutoff_date = datetime.utcnow() - timedelta(days=days)
+            query = query.filter(Repository.last_scanned_at >= cutoff_date)
+            
+        repos = [repo[0] for repo in query.all()]
+        session.close()
+        logger.debug(f"Found {len(repos)} recently scanned repositories")
+        return repos 

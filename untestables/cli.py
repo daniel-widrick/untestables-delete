@@ -8,7 +8,9 @@ from common.logging import setup_logging, get_logger
 @click.command()
 @click.option('--min-stars', type=int, default=5, help='Minimum number of stars')
 @click.option('--max-stars', type=int, default=1000, help='Maximum number of stars')
-def main(min_stars: int, max_stars: int) -> None:
+@click.option('--rescan-days', type=int, help='Re-scan repositories that were last scanned more than this many days ago')
+@click.option('--force-rescan', is_flag=True, help='Force re-scan of all repositories, ignoring last scan time')
+def main(min_stars: int, max_stars: int, rescan_days: Optional[int] = None, force_rescan: bool = False) -> None:
     """Find Python repositories that need unit tests."""
     # Set up logging with a timestamped log file
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -18,6 +20,10 @@ def main(min_stars: int, max_stars: int) -> None:
     logger = get_logger()
     
     logger.info(f"Starting repository search with {min_stars} to {max_stars} stars")
+    if rescan_days:
+        logger.info(f"Will re-scan repositories last scanned more than {rescan_days} days ago")
+    if force_rescan:
+        logger.info("Force re-scan enabled - will scan all repositories")
     
     try:
         client = GitHubClient()
@@ -26,6 +32,12 @@ def main(min_stars: int, max_stars: int) -> None:
         # Check rate limits before starting
         rate_limit = client.get_rate_limit()
         logger.info(f"Current GitHub API rate limit: {rate_limit['remaining']}/{rate_limit['limit']} remaining")
+        
+        # Get list of recently scanned repositories
+        recently_scanned = set()
+        if not force_rescan:
+            recently_scanned = set(client.get_recently_scanned_repos(rescan_days))
+            logger.info(f"Found {len(recently_scanned)} recently scanned repositories")
         
         # Search for repositories
         logger.info("Searching GitHub for Python repositories...")
@@ -47,6 +59,13 @@ def main(min_stars: int, max_stars: int) -> None:
         # Analyze each repository
         for repo in repos:
             repo_name = repo.full_name
+            repo_name_only = repo_name.split('/')[-1]
+            
+            # Skip if recently scanned and not forcing re-scan
+            if not force_rescan and repo_name_only in recently_scanned:
+                logger.info(f"Skipping {repo_name} - recently scanned")
+                continue
+                
             logger.info(f"Analyzing repository: {repo_name}")
             click.echo(f"\nAnalyzing {repo_name}...")
             

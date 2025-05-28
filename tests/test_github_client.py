@@ -5,6 +5,8 @@ from unittest.mock import patch, MagicMock, Mock
 from untestables.github.client import GitHubClient, RateLimitExceeded, Repository, retry_on_failure
 from sqlalchemy.orm import Session
 from github.GithubException import GithubException, RateLimitExceededException
+import time
+from datetime import datetime, timedelta
 
 @pytest.fixture
 def mock_github():
@@ -191,6 +193,44 @@ def test_store_repository_metadata(mock_github):
     assert repo.missing_test_config_files is False
     assert repo.missing_cicd_configs is False
     assert repo.missing_readme_mentions is False
+    session.close()
+
+def test_store_repository_metadata_updates_last_scanned_at(mock_github):
+    """Test that store_repository_metadata updates the last_scanned_at timestamp."""
+    client = GitHubClient(token="test_token", db_url="sqlite:///:memory:")
+    metadata = {
+        "name": "test-repo",
+        "description": "A test repository",
+        "star_count": 100,
+        "url": "https://github.com/owner/test-repo"
+    }
+    missing = {
+        "test_directories": False,
+        "test_files": False,
+        "test_config_files": False,
+        "cicd_configs": False,
+        "readme_mentions": False
+    }
+    
+    # Store initial data
+    client.store_repository_metadata(metadata, missing)
+    
+    # Get the stored record
+    session = Session(bind=client.engine)
+    repo = session.query(Repository).filter_by(name="test-repo").first()
+    initial_timestamp = repo.last_scanned_at
+    session.close()
+    
+    # Wait a moment to ensure timestamp difference
+    time.sleep(1)
+    
+    # Update the record
+    client.store_repository_metadata(metadata, missing)
+    
+    # Check that timestamp was updated
+    session = Session(bind=client.engine)
+    repo = session.query(Repository).filter_by(name="test-repo").first()
+    assert repo.last_scanned_at > initial_timestamp
     session.close()
 
 def test_check_test_directories_exists(mock_github):
@@ -563,3 +603,61 @@ def test_client_retry_on_api_calls(mock_github):
     with pytest.raises(GithubException):
         client.get_repository_metadata("test/repo")
     assert mock_github.return_value.get_repo.call_count == 4  # 1 initial + 3 retries 
+
+def test_get_recently_scanned_repos(mock_github):
+    """Test that get_recently_scanned_repos returns correct repositories."""
+    client = GitHubClient(token="test_token", db_url="sqlite:///:memory:")
+    
+    # Create some test repositories with different scan times
+    session = Session(bind=client.engine)
+    now = datetime.utcnow()
+    
+    # Recent scan (1 day ago)
+    repo1 = Repository(
+        name="repo1",
+        description="Test repo 1",
+        star_count=100,
+        url="https://github.com/owner/repo1",
+        missing_test_directories=False,
+        missing_test_files=False,
+        missing_test_config_files=False,
+        missing_cicd_configs=False,
+        missing_readme_mentions=False,
+        last_scanned_at=now - timedelta(days=1)
+    )
+    
+    # Old scan (31 days ago)
+    repo2 = Repository(
+        name="repo2",
+        description="Test repo 2",
+        star_count=200,
+        url="https://github.com/owner/repo2",
+        missing_test_directories=True,
+        missing_test_files=True,
+        missing_test_config_files=False,
+        missing_cicd_configs=False,
+        missing_readme_mentions=False,
+        last_scanned_at=now - timedelta(days=31)
+    )
+    
+    session.add_all([repo1, repo2])
+    session.commit()
+    session.close()
+    
+    # Test getting all scanned repos
+    all_repos = client.get_recently_scanned_repos()
+    assert len(all_repos) == 2
+    assert "repo1" in all_repos
+    assert "repo2" in all_repos
+    
+    # Test getting repos scanned in last 30 days
+    recent_repos = client.get_recently_scanned_repos(days=30)
+    assert len(recent_repos) == 1
+    assert "repo1" in recent_repos
+    assert "repo2" not in recent_repos
+    
+    # Test getting repos scanned in last 40 days
+    older_repos = client.get_recently_scanned_repos(days=40)
+    assert len(older_repos) == 2
+    assert "repo1" in older_repos
+    assert "repo2" in older_repos 
