@@ -78,14 +78,16 @@ class Repository(Base):
 class GitHubClient:
     """Client for interacting with the GitHub API."""
     
-    def __init__(self, token: Optional[str] = None, db_url: Optional[str] = None):
+    def __init__(self, token: Optional[str] = None, db_url: Optional[str] = None, load_env: bool = True):
         """Initialize the GitHub client.
         
         Args:
             token: GitHub personal access token. If not provided, will try to load from GITHUB_TOKEN env var.
             db_url: Database URL. If not provided, will try to load from DATABASE_URL env var.
+            load_env: Whether to load environment variables from .env file (default: True).
         """
-        load_dotenv()
+        if load_env:
+            load_dotenv()
         self.token = token or os.getenv("GITHUB_TOKEN")
         if not self.token:
             logger.error("GitHub token not found in environment variables")
