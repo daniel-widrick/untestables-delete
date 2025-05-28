@@ -188,7 +188,8 @@ def test_store_repository_metadata(mock_github):
         "name": "test-repo",
         "description": "A test repository",
         "star_count": 100,
-        "url": "https://github.com/owner/test-repo"
+        "url": "https://github.com/owner/test-repo",
+        "language": "python"
     }
     missing = {
         "test_directories": False,
@@ -204,6 +205,7 @@ def test_store_repository_metadata(mock_github):
     assert repo.description == "A test repository"
     assert repo.star_count == 100
     assert repo.url == "https://github.com/owner/test-repo"
+    assert repo.language == "python"
     assert repo.missing_test_directories is False
     assert repo.missing_test_files is False
     assert repo.missing_test_config_files is False
@@ -218,7 +220,8 @@ def test_store_repository_metadata_updates_last_scanned_at(mock_github):
         "name": "test-repo",
         "description": "A test repository",
         "star_count": 100,
-        "url": "https://github.com/owner/test-repo"
+        "url": "https://github.com/owner/test-repo",
+        "language": "python"
     }
     missing = {
         "test_directories": False,
@@ -233,6 +236,7 @@ def test_store_repository_metadata_updates_last_scanned_at(mock_github):
     repo = session.query(Repository).filter_by(name="test-repo").first()
     assert repo is not None
     assert repo.last_scanned_at is not None
+    assert repo.language == "python"
     session.close()
 
 def test_check_test_directories_exists(mock_github):
@@ -491,6 +495,7 @@ def test_store_missing_tests_new_repo(mock_github):
     mock_repo.description = "A test repository"
     mock_repo.stargazers_count = 100
     mock_repo.html_url = "https://github.com/owner/test-repo"
+    mock_repo.language = "python"
     mock_github.return_value.get_repo.return_value = mock_repo
 
     client = GitHubClient(token="test_token", db_url="sqlite:///:memory:")
@@ -501,7 +506,14 @@ def test_store_missing_tests_new_repo(mock_github):
         "cicd_configs": False,
         "readme_mentions": True
     }
-    client.store_missing_tests("owner/test-repo", missing)
+    metadata = {
+        "name": "test-repo",
+        "description": "A test repository",
+        "star_count": 100,
+        "url": "https://github.com/owner/test-repo",
+        "language": "python"
+    }
+    client.store_repository_metadata(metadata, missing)
 
     session = Session(bind=client.engine)
     repo = session.query(Repository).filter_by(name="test-repo").first()
@@ -511,6 +523,7 @@ def test_store_missing_tests_new_repo(mock_github):
     assert repo.missing_test_config_files is True
     assert repo.missing_cicd_configs is False
     assert repo.missing_readme_mentions is True
+    assert repo.language == "python"
     session.close()
 
 def test_store_missing_tests_existing_repo(mock_github):
@@ -520,6 +533,7 @@ def test_store_missing_tests_existing_repo(mock_github):
     mock_repo.description = "A test repository"
     mock_repo.stargazers_count = 100
     mock_repo.html_url = "https://github.com/owner/test-repo"
+    mock_repo.language = "python"
     mock_github.return_value.get_repo.return_value = mock_repo
 
     client = GitHubClient(token="test_token", db_url="sqlite:///:memory:")
@@ -528,7 +542,8 @@ def test_store_missing_tests_existing_repo(mock_github):
         "name": "test-repo",
         "description": "A test repository",
         "star_count": 100,
-        "url": "https://github.com/owner/test-repo"
+        "url": "https://github.com/owner/test-repo",
+        "language": "python"
     }
     missing = {
         "test_directories": False,
@@ -557,6 +572,7 @@ def test_store_missing_tests_existing_repo(mock_github):
     assert repo.missing_test_config_files is False
     assert repo.missing_cicd_configs is True
     assert repo.missing_readme_mentions is False
+    assert repo.language == "python"
     session.close()
 
 def test_retry_on_failure_success():

@@ -74,6 +74,7 @@ class Repository(Base):
     missing_cicd_configs = Column(Boolean, nullable=False)
     missing_readme_mentions = Column(Boolean, nullable=False)
     last_scanned_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    language = Column(String(50), nullable=True)
 
 class GitHubClient:
     """Client for interacting with the GitHub API."""
@@ -174,18 +175,14 @@ class GitHubClient:
             response = self.client.search_repositories(query=query, page=page)
             if not response or response.totalCount == 0:
                 break
-                
             # Convert PaginatedList to list and extend results
             page_results = list(response)
             results.extend(page_results)
             logger.debug(f"Found {len(page_results)} results on page {page}")
-            
             # Check if we've reached the end
-            if len(page_results) < 30:  # GitHub's default page size
+            if len(page_results) < 29:  # GitHub's default page size
                 break
-                
             page += 1
-            
         logger.info(f"Total results found: {len(results)}")
         return results 
 
@@ -208,32 +205,22 @@ class GitHubClient:
         return self.get_paginated_results(query) 
 
     @retry_on_failure()
-    def get_repository_metadata(self, repo_name: str) -> dict:
-        """Retrieve metadata for a given repository.
-        Args:
-            repo_name: The name of the repository (e.g., 'owner/repo').
-        Returns:
-            dict: Repository metadata including name, description, star count, and URL.
-        Raises:
-            GithubException: If the repository is not found.
-        """
+    def get_repository_metadata(self, repo_name: str, language: str = "python") -> dict:
+        """Retrieve metadata for a given repository, including language."""
         logger.info(f"Fetching metadata for repository: {repo_name}")
         repo = self.client.get_repo(repo_name)
         metadata = {
             "name": repo.name,
             "description": repo.description,
             "star_count": repo.stargazers_count,
-            "url": repo.html_url
+            "url": repo.html_url,
+            "language": getattr(repo, "language", language) or language
         }
         logger.debug(f"Repository metadata: {metadata}")
         return metadata 
 
     def store_repository_metadata(self, metadata: dict, missing: dict) -> None:
-        """Store repository metadata in the database.
-        Args:
-            metadata: Dictionary containing repository metadata.
-            missing: Dictionary indicating which test components are missing, as returned by flag_missing_tests.
-        """
+        """Store repository metadata in the database, including language."""
         logger.info(f"Storing metadata for repository: {metadata['name']}")
         session = self.Session()
         repo = Repository(**metadata)
