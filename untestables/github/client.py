@@ -126,7 +126,7 @@ class GitHubClient:
         """
         info = self.get_rate_limit()
         if info["remaining"] <= 0:
-            raise RateLimitExceeded(f"GitHub API rate limit exceeded. Resets at {info['reset_time']}.")
+            raise RateLimitExceeded(f"GitHub API rate limit exceeded. Resets at {info['reset_time']}. Please try again later.")
         elif info["remaining"] < min_remaining:
             print(f"Warning: GitHub API rate limit is low ({info['remaining']} remaining, resets at {info['reset_time']}).")
         return info 

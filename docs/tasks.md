@@ -56,14 +56,14 @@ This document outlines the requirements for an application designed to identify 
 ### **Error Handling & API Limits**
 
 - [x] Implement retry logic for failed requests.
-- [ ] Offer user-friendly error messages when exceeding API limits.
+- [x] Offer user-friendly error messages when exceeding API limits.
 
 ## **5. CI/CD Documentation (For Future Expansion)**
 
 ### **Overview of CI/CD Pipeline (Documentation Only)**
 
-- [ ] Explain how repositories could integrate:
+- [x] Explain how repositories could integrate:
   - Automated unit test execution.
   - Static analysis tools (e.g., Flake8, Pylint).
   - Continuous Integration with GitHub Actions.
-- [ ] Provide instructions on how to set up test automation.
+- [x] Provide instructions on how to set up test automation.
