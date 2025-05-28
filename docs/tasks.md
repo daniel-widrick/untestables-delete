@@ -37,7 +37,7 @@ This document outlines the requirements for an application designed to identify 
 ### **README & Project Metadata Analysis**
 
 - [x] Search repository README for mentions of testing frameworks (pytest, unittest, nose).
-- [ ] Detect CI/CD configurations related to testing (GitHub Actions, Travis CI).
+- [x] Detect CI/CD configurations related to testing (GitHub Actions, Travis CI).
 
 ### **Reporting on Missing Tests**
 

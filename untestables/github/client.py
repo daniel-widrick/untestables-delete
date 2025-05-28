@@ -158,17 +158,20 @@ class GitHubClient:
         """
         repo = self.client.get_repo(repo_name)
         test_dirs = ["tests", "test"]
-        # Check root directory
-        contents = repo.get_contents("")
-        if any(content.name in test_dirs and content.type == "dir" for content in contents):
-            return True
-        # Check src/ directory if it exists
-        src_dir = next((c for c in contents if c.name == "src" and c.type == "dir"), None)
-        if src_dir:
-            src_contents = repo.get_contents("src")
-            if any(content.name in test_dirs and content.type == "dir" for content in src_contents):
+        try:
+            # Check root directory
+            contents = repo.get_contents("")
+            if any(content.name in test_dirs and content.type == "dir" for content in contents):
                 return True
-        return False 
+            # Check src/ directory if it exists
+            src_dir = next((c for c in contents if c.name == "src" and c.type == "dir"), None)
+            if src_dir:
+                src_contents = repo.get_contents("src")
+                if any(content.name in test_dirs and content.type == "dir" for content in src_contents):
+                    return True
+            return False
+        except GithubException:
+            return False
 
     def check_test_files(self, repo_name: str) -> bool:
         """Check for the existence of common unit test files in a given repository.
@@ -179,25 +182,28 @@ class GitHubClient:
         """
         repo = self.client.get_repo(repo_name)
         test_patterns = ["test_*.py", "*_test.py"]
-        # Check root directory
-        contents = repo.get_contents("")
-        if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in contents if content.type == "file"):
-            return True
-        # Check src/ directory if it exists
-        src_dir = next((c for c in contents if c.name == "src" and c.type == "dir"), None)
-        if src_dir:
-            src_contents = repo.get_contents("src")
-            if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in src_contents if content.type == "file"):
+        try:
+            # Check root directory
+            contents = repo.get_contents("")
+            if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in contents if content.type == "file"):
                 return True
-        # Check test directories if they exist
-        test_dirs = ["tests", "test"]
-        for test_dir_name in test_dirs:
-            test_dir = next((c for c in contents if c.name == test_dir_name and c.type == "dir"), None)
-            if test_dir:
-                test_contents = repo.get_contents(test_dir_name)
-                if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in test_contents if content.type == "file"):
+            # Check src/ directory if it exists
+            src_dir = next((c for c in contents if c.name == "src" and c.type == "dir"), None)
+            if src_dir:
+                src_contents = repo.get_contents("src")
+                if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in src_contents if content.type == "file"):
                     return True
-        return False 
+            # Check test directories if they exist
+            test_dirs = ["tests", "test"]
+            for test_dir_name in test_dirs:
+                test_dir = next((c for c in contents if c.name == test_dir_name and c.type == "dir"), None)
+                if test_dir:
+                    test_contents = repo.get_contents(test_dir_name)
+                    if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in test_contents if content.type == "file"):
+                        return True
+            return False
+        except GithubException:
+            return False
 
     def check_test_config_files(self, repo_name: str) -> bool:
         """Scan for configuration files related to testing in the root directory.
@@ -208,8 +214,11 @@ class GitHubClient:
         """
         repo = self.client.get_repo(repo_name)
         config_files = ["pytest.ini", "tox.ini", "nose.cfg"]
-        contents = repo.get_contents("")
-        return any(content.name in config_files and content.type == "file" for content in contents) 
+        try:
+            contents = repo.get_contents("")
+            return any(content.name in config_files and content.type == "file" for content in contents)
+        except GithubException:
+            return False
 
     def check_readme_for_test_frameworks(self, repo_name: str) -> bool:
         """Search the repository README for mentions of testing frameworks.
@@ -249,3 +258,19 @@ class GitHubClient:
             except GithubException:
                 continue
         return False 
+
+    def flag_missing_tests(self, repo_name: str) -> dict:
+        """Flag repositories where unit testing frameworks and configurations are absent.
+        Args:
+            repo_name: The name of the repository (e.g., 'owner/repo').
+        Returns:
+            dict: A dictionary indicating which test components are missing.
+        """
+        missing = {
+            "test_directories": not self.check_test_directories(repo_name),
+            "test_files": not self.check_test_files(repo_name),
+            "test_config_files": not self.check_test_config_files(repo_name),
+            "cicd_configs": not self.check_cicd_configs(repo_name),
+            "readme_mentions": not self.check_readme_for_test_frameworks(repo_name)
+        }
+        return missing 

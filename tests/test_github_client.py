@@ -369,4 +369,63 @@ def test_check_cicd_configs_not_exists(mock_github):
     mock_repo.get_contents.side_effect = GithubException(404, "Not Found")
     mock_github.return_value.get_repo.return_value = mock_repo
     client = GitHubClient(token="test_token")
-    assert client.check_cicd_configs("owner/repo") is False 
+    assert client.check_cicd_configs("owner/repo") is False
+
+def test_flag_missing_tests_all_present(mock_github):
+    """Test flagging when all test components are present."""
+    mock_repo = MagicMock()
+    # Directory and file mocks
+    mock_tests_dir = MagicMock()
+    mock_tests_dir.name = "tests"
+    mock_tests_dir.type = "dir"
+    mock_test_file = MagicMock()
+    mock_test_file.name = "test_example.py"
+    mock_test_file.type = "file"
+    mock_config_file = MagicMock()
+    mock_config_file.name = "pytest.ini"
+    mock_config_file.type = "file"
+    mock_cicd_file = MagicMock()
+    mock_cicd_file.name = "test.yml"
+    mock_cicd_file.type = "file"
+    # README mock
+    mock_readme = MagicMock()
+    mock_readme.decoded_content = b"This project uses pytest for testing."
+
+    def get_contents_side_effect(path=""):
+        if path == "":
+            return [mock_tests_dir, mock_test_file, mock_config_file, mock_cicd_file]
+        elif path == "tests":
+            return [mock_test_file]
+        elif path == "src":
+            return []
+        elif path == "pytest.ini":
+            return [mock_config_file]
+        elif path == ".github/workflows/*.yml":
+            return [mock_cicd_file]
+        elif path == ".travis.yml":
+            return []
+        elif path == "Jenkinsfile":
+            return []
+        elif path == "teamcity.yml":
+            return []
+        else:
+            raise GithubException(404, "Not Found")
+
+    mock_repo.get_contents.side_effect = get_contents_side_effect
+    mock_repo.get_readme.return_value = mock_readme
+    mock_github.return_value.get_repo.return_value = mock_repo
+
+    client = GitHubClient(token="test_token")
+    missing = client.flag_missing_tests("owner/repo")
+    assert not any(missing.values())
+
+def test_flag_missing_tests_all_absent(mock_github):
+    """Test flagging when all test components are absent."""
+    mock_repo = MagicMock()
+    mock_repo.get_contents.side_effect = GithubException(404, "Not Found")
+    mock_repo.get_readme.side_effect = GithubException(404, "Not Found")
+    mock_github.return_value.get_repo.return_value = mock_repo
+
+    client = GitHubClient(token="test_token")
+    missing = client.flag_missing_tests("owner/repo")
+    assert all(missing.values()) 
