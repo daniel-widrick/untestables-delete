@@ -180,4 +180,126 @@ def test_store_repository_metadata(mock_github):
     assert repo.description == "A test repository"
     assert repo.star_count == 100
     assert repo.url == "https://github.com/owner/test-repo"
-    session.close() 
+    session.close()
+
+def test_check_test_directories_exists(mock_github):
+    """Test that check_test_directories correctly identifies the presence of test directories."""
+    mock_repo = MagicMock()
+    mock_tests_dir = MagicMock()
+    mock_tests_dir.name = "tests"
+    mock_tests_dir.type = "dir"
+    mock_src_dir = MagicMock()
+    mock_src_dir.name = "src"
+    mock_src_dir.type = "dir"
+    mock_contents = [mock_tests_dir, mock_src_dir]
+    mock_repo.get_contents.return_value = mock_contents
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_test_directories("owner/repo") is True
+    mock_github.return_value.get_repo.assert_called_once_with("owner/repo")
+    mock_repo.get_contents.assert_called_once_with("")
+
+def test_check_test_directories_not_exists(mock_github):
+    """Test that check_test_directories handles the absence of test directories gracefully."""
+    mock_repo = MagicMock()
+    mock_contents = [MagicMock(name="src", type="dir")]
+    mock_repo.get_contents.return_value = mock_contents
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_test_directories("owner/repo") is False
+
+def test_check_test_directories_root_tests(mock_github):
+    """Test detection of 'tests/' at root."""
+    mock_repo = MagicMock()
+    mock_tests_dir = MagicMock()
+    mock_tests_dir.name = "tests"
+    mock_tests_dir.type = "dir"
+    mock_contents = [mock_tests_dir]
+    mock_repo.get_contents.return_value = mock_contents
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_test_directories("owner/repo") is True
+
+def test_check_test_directories_root_test(mock_github):
+    """Test detection of 'test/' at root."""
+    mock_repo = MagicMock()
+    mock_test_dir = MagicMock()
+    mock_test_dir.name = "test"
+    mock_test_dir.type = "dir"
+    mock_contents = [mock_test_dir]
+    mock_repo.get_contents.return_value = mock_contents
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_test_directories("owner/repo") is True
+
+def test_check_test_directories_src_tests(mock_github):
+    """Test detection of 'src/tests/' directory."""
+    mock_repo = MagicMock()
+    mock_src_dir = MagicMock()
+    mock_src_dir.name = "src"
+    mock_src_dir.type = "dir"
+    mock_contents = [mock_src_dir]
+    mock_tests_dir = MagicMock()
+    mock_tests_dir.name = "tests"
+    mock_tests_dir.type = "dir"
+    mock_repo.get_contents.side_effect = [mock_contents, [mock_tests_dir]]
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_test_directories("owner/repo") is True
+
+def test_check_test_directories_src_test(mock_github):
+    """Test detection of 'src/test/' directory."""
+    mock_repo = MagicMock()
+    mock_src_dir = MagicMock()
+    mock_src_dir.name = "src"
+    mock_src_dir.type = "dir"
+    mock_contents = [mock_src_dir]
+    mock_test_dir = MagicMock()
+    mock_test_dir.name = "test"
+    mock_test_dir.type = "dir"
+    mock_repo.get_contents.side_effect = [mock_contents, [mock_test_dir]]
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_test_directories("owner/repo") is True
+
+def test_check_test_files_root(mock_github):
+    """Test detection of test files at root."""
+    mock_repo = MagicMock()
+    mock_test_file = MagicMock()
+    mock_test_file.name = "test_example.py"
+    mock_test_file.type = "file"
+    mock_contents = [mock_test_file]
+    mock_repo.get_contents.return_value = mock_contents
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_test_files("owner/repo") is True
+
+def test_check_test_files_src(mock_github):
+    """Test detection of test files under src/."""
+    mock_repo = MagicMock()
+    mock_src_dir = MagicMock()
+    mock_src_dir.name = "src"
+    mock_src_dir.type = "dir"
+    mock_contents = [mock_src_dir]
+    mock_test_file = MagicMock()
+    mock_test_file.name = "test_example.py"
+    mock_test_file.type = "file"
+    mock_repo.get_contents.side_effect = [mock_contents, [mock_test_file]]
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_test_files("owner/repo") is True
+
+def test_check_test_files_test_dir(mock_github):
+    """Test detection of test files under tests/ directory."""
+    mock_repo = MagicMock()
+    mock_tests_dir = MagicMock()
+    mock_tests_dir.name = "tests"
+    mock_tests_dir.type = "dir"
+    mock_contents = [mock_tests_dir]
+    mock_test_file = MagicMock()
+    mock_test_file.name = "test_example.py"
+    mock_test_file.type = "file"
+    mock_repo.get_contents.side_effect = [mock_contents, [mock_test_file]]
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    assert client.check_test_files("owner/repo") is True 

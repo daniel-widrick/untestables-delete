@@ -148,3 +148,53 @@ class GitHubClient:
         session.add(repo)
         session.commit()
         session.close() 
+
+    def check_test_directories(self, repo_name: str) -> bool:
+        """Check for the existence of common unit test directories in a given repository.
+        Args:
+            repo_name: The name of the repository (e.g., 'owner/repo').
+        Returns:
+            bool: True if test directories exist, False otherwise.
+        """
+        repo = self.client.get_repo(repo_name)
+        test_dirs = ["tests", "test"]
+        # Check root directory
+        contents = repo.get_contents("")
+        if any(content.name in test_dirs and content.type == "dir" for content in contents):
+            return True
+        # Check src/ directory if it exists
+        src_dir = next((c for c in contents if c.name == "src" and c.type == "dir"), None)
+        if src_dir:
+            src_contents = repo.get_contents("src")
+            if any(content.name in test_dirs and content.type == "dir" for content in src_contents):
+                return True
+        return False 
+
+    def check_test_files(self, repo_name: str) -> bool:
+        """Check for the existence of common unit test files in a given repository.
+        Args:
+            repo_name: The name of the repository (e.g., 'owner/repo').
+        Returns:
+            bool: True if test files exist, False otherwise.
+        """
+        repo = self.client.get_repo(repo_name)
+        test_patterns = ["test_*.py", "*_test.py"]
+        # Check root directory
+        contents = repo.get_contents("")
+        if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in contents if content.type == "file"):
+            return True
+        # Check src/ directory if it exists
+        src_dir = next((c for c in contents if c.name == "src" and c.type == "dir"), None)
+        if src_dir:
+            src_contents = repo.get_contents("src")
+            if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in src_contents if content.type == "file"):
+                return True
+        # Check test directories if they exist
+        test_dirs = ["tests", "test"]
+        for test_dir_name in test_dirs:
+            test_dir = next((c for c in contents if c.name == test_dir_name and c.type == "dir"), None)
+            if test_dir:
+                test_contents = repo.get_contents(test_dir_name)
+                if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in test_contents if content.type == "file"):
+                    return True
+        return False 

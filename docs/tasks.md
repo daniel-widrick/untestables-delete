@@ -30,7 +30,7 @@ This document outlines the requirements for an application designed to identify 
 
 ### **Detecting Test Files & Directories**
 
-- [ ] Check for the existence of common unit test directories: tests/, test/.
+- [x] Check for the existence of common unit test directories: tests/, test/.
 - [ ] Identify common unit test files (test\_\*.py, \*\_test.py).
 - [ ] Scan for configuration files related to testing (pytest.ini, tox.ini, nose.cfg).
 
