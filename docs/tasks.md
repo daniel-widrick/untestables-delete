@@ -42,28 +42,13 @@ This document outlines the requirements for an application designed to identify 
 ### **Reporting on Missing Tests**
 
 - [x] Flag repositories where unit testing frameworks and configurations are absent
-- [ ] Maintain a structured list of repositories needing unit tests.
-
-## **3. Data Processing & Output**
-
-### **Report Generation**
-
-- [ ] Export filtered repository results to:
-  - **CSV** for structured data analysis.
-  - **JSON** for programmatic use in automation.
-  - **Markdown** for easy documentation.
-- [ ] Include metadata fields (repository URL, star count, test presence status).
-
-### **Enhancing Search Accuracy**
-
-- [ ] Apply heuristics to detect repositories genuinely lacking tests (avoiding false positives).
-- [ ] Consider more robust analysis via static code scanning tools.
+- [x] Maintain a structured list of repositories needing unit tests.
 
 ## **4. Application Configuration & Usability**
 
 ### **Command-Line Interface (CLI)**
 
-- [ ] Provide arguments for customization:
+- [x] Provide arguments for customization:
   - Star range (--min-stars, --max-stars).
   - Custom search queries (--query).
   - Output file formats (--output csv/json/md).

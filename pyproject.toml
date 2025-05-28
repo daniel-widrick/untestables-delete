@@ -1,10 +1,13 @@
 [tool.poetry]
-name = "mission untestable"
+name = "untestables"
 version = "0.1.0"
-description = "A tool to find Python repositories that need unit tests"
+description = "A tool to find repositories that need unit tests"
 authors = ["llbbl <logan@llbbl.com>"]
 readme = "README.md"
-package-mode = false
+
+packages = [
+    { include = "untestables" }
+]
 
 [tool.poetry.dependencies]
 python = "^3.11"
@@ -13,10 +16,15 @@ python-dotenv = "^1.0.0"
 sqlalchemy = "^2.0.41"
 alembic = "^1.16.1"
 psycopg2-binary = "^2.9.10"
+click = "^8.2.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
 pytest-cov = "^4.1.0"
+
+[tool.poetry.scripts]
+test = "pytest:main"
+untestables = "untestables.cli:main"
 
 [build-system]
 requires = ["poetry-core"]
