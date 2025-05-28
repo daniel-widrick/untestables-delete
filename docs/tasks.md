@@ -7,8 +7,8 @@ This document outlines the requirements for an application designed to identify 
 ### **GitHub API Integration**
 
 - [x] Securely connect to the GitHub API using authentication tokens (OAuth or Personal Access Tokens).
-- [ ] Manage API rate limits gracefully (e.g., request throttling, user alerts).
-- [ ] Support pagination to retrieve large datasets.
+- [x] Manage API rate limits gracefully (e.g., request throttling, user alerts).
+- [x] Support pagination to retrieve large datasets.
 
 ### **Search Criteria**
 
