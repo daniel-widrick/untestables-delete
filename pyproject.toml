@@ -10,6 +10,9 @@ package-mode = false
 python = "^3.11"
 PyGithub = "^2.1.1"
 python-dotenv = "^1.0.0"
+sqlalchemy = "^2.0.41"
+alembic = "^1.16.1"
+psycopg2-binary = "^2.9.10"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

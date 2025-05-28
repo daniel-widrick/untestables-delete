@@ -2,7 +2,8 @@
 import os
 import pytest
 from unittest.mock import patch, MagicMock
-from untestables.github.client import GitHubClient, RateLimitExceeded
+from untestables.github.client import GitHubClient, RateLimitExceeded, Repository
+from sqlalchemy.orm import Session
 
 @pytest.fixture
 def mock_github():
@@ -161,4 +162,22 @@ def test_get_repository_metadata_not_found(mock_github):
     mock_github.return_value.get_repo.side_effect = GithubException(404, "Not Found")
     client = GitHubClient(token="test_token")
     with pytest.raises(GithubException):
-        client.get_repository_metadata("owner/nonexistent-repo") 
+        client.get_repository_metadata("owner/nonexistent-repo")
+
+def test_store_repository_metadata(mock_github):
+    """Test that store_repository_metadata correctly stores data in the database."""
+    client = GitHubClient(token="test_token", db_url="sqlite:///:memory:")
+    metadata = {
+        "name": "test-repo",
+        "description": "A test repository",
+        "star_count": 100,
+        "url": "https://github.com/owner/test-repo"
+    }
+    client.store_repository_metadata(metadata)
+    session = Session(bind=client.engine)
+    repo = session.query(Repository).filter_by(name="test-repo").first()
+    assert repo is not None
+    assert repo.description == "A test repository"
+    assert repo.star_count == 100
+    assert repo.url == "https://github.com/owner/test-repo"
+    session.close() 

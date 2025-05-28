@@ -4,19 +4,33 @@ from typing import Optional
 from github import Github
 from github.GithubException import GithubException
 from dotenv import load_dotenv
+from sqlalchemy import create_engine, Column, Integer, String, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
 class RateLimitExceeded(Exception):
     """Exception raised when the GitHub API rate limit is exceeded."""
     pass
 
+Base = declarative_base()
+
+class Repository(Base):
+    __tablename__ = 'repositories'
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    star_count = Column(Integer, nullable=False)
+    url = Column(String(255), nullable=False)
+
 class GitHubClient:
     """Client for interacting with the GitHub API."""
     
-    def __init__(self, token: Optional[str] = None):
+    def __init__(self, token: Optional[str] = None, db_url: Optional[str] = None):
         """Initialize the GitHub client.
         
         Args:
             token: GitHub personal access token. If not provided, will try to load from GITHUB_TOKEN env var.
+            db_url: Database URL. If not provided, will try to load from DATABASE_URL env var.
         """
         load_dotenv()
         self.token = token or os.getenv("GITHUB_TOKEN")
@@ -24,6 +38,12 @@ class GitHubClient:
             raise ValueError("GitHub token is required. Set GITHUB_TOKEN environment variable or pass token directly.")
         
         self.client = Github(self.token)
+        self.db_url = db_url or os.getenv("DATABASE_URL")
+        if not self.db_url:
+            raise ValueError("DATABASE_URL environment variable not set and no fallback provided.")
+        self.engine = create_engine(self.db_url)
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
     
     def get_rate_limit(self) -> dict:
         """Get the current rate limit information.
@@ -117,3 +137,14 @@ class GitHubClient:
             "star_count": repo.stargazers_count,
             "url": repo.html_url
         } 
+
+    def store_repository_metadata(self, metadata: dict) -> None:
+        """Store repository metadata in the database.
+        Args:
+            metadata: Dictionary containing repository metadata.
+        """
+        session = self.Session()
+        repo = Repository(**metadata)
+        session.add(repo)
+        session.commit()
+        session.close() 

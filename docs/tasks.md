@@ -24,7 +24,7 @@ This document outlines the requirements for an application designed to identify 
   - Description
   - Star count
   - Repository URL
-- [ ] Store search results for further processing.
+- [x] Store search results for further processing.
 
 ## **2. Unit Test Presence Detection**
 
