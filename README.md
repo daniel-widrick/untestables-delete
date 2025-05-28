@@ -14,19 +14,13 @@ poetry run untestables [OPTIONS]
 
 - `--min-stars INTEGER` Minimum number of stars (default: 5)
 - `--max-stars INTEGER` Maximum number of stars (default: 1000)
-- `--query TEXT` Additional search query terms
-- `--output [csv|json|md]` Output format (default: md)
 
-### Examples
+### Example
 
-Find Python repos with 10–500 stars and output as JSON:
+Find Python repos with 10–500 stars:
 
 ```sh
-poetry run untestables --min-stars 10 --max-stars 500 --output json
+poetry run untestables --min-stars 10 --max-stars 500
 ```
 
-Add a search keyword and output as CSV:
-
-```sh
-poetry run untestables --query "machine learning" --output csv
-```
+Results are stored in a database for further analysis.

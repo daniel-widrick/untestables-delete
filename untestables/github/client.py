@@ -1,8 +1,10 @@
 """GitHub API client implementation."""
 import os
-from typing import Optional
+import time
+from functools import wraps
+from typing import Optional, Callable, Any
 from github import Github
-from github.GithubException import GithubException
+from github.GithubException import GithubException, RateLimitExceededException
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
@@ -11,6 +13,41 @@ from sqlalchemy.orm import sessionmaker
 class RateLimitExceeded(Exception):
     """Exception raised when the GitHub API rate limit is exceeded."""
     pass
+
+def retry_on_failure(max_retries: int = 3, delay: float = 1.0, backoff: float = 2.0):
+    """Decorator to retry a function on failure.
+    
+    Args:
+        max_retries: Maximum number of retry attempts.
+        delay: Initial delay between retries in seconds.
+        backoff: Multiplier for delay after each retry.
+    """
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(*args, **kwargs) -> Any:
+            current_delay = delay
+            last_exception = None
+            
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except (GithubException, RateLimitExceededException) as e:
+                    last_exception = e
+                    if isinstance(e, RateLimitExceededException):
+                        # For rate limits, wait until reset
+                        reset_time = e.reset
+                        wait_time = max(reset_time - time.time(), 0)
+                        if wait_time > 0:
+                            time.sleep(wait_time)
+                            continue
+                    if attempt < max_retries:
+                        time.sleep(current_delay)
+                        current_delay *= backoff
+                    else:
+                        raise last_exception
+            return None
+        return wrapper
+    return decorator
 
 Base = declarative_base()
 
@@ -50,6 +87,7 @@ class GitHubClient:
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
     
+    @retry_on_failure()
     def get_rate_limit(self) -> dict:
         """Get the current rate limit information.
         
@@ -63,6 +101,7 @@ class GitHubClient:
             "reset_time": rate_limit.core.reset
         }
     
+    @retry_on_failure()
     def test_connection(self) -> bool:
         """Test the GitHub API connection.
         
@@ -92,6 +131,7 @@ class GitHubClient:
             print(f"Warning: GitHub API rate limit is low ({info['remaining']} remaining, resets at {info['reset_time']}).")
         return info 
 
+    @retry_on_failure()
     def get_paginated_results(self, query: str) -> list:
         """Retrieve paginated results from the GitHub API.
         Args:
@@ -110,6 +150,7 @@ class GitHubClient:
             page += 1
         return results 
 
+    @retry_on_failure()
     def filter_repositories(self, language: str = "python", min_stars: int = 0, max_stars: int = 1000, keywords: list = None) -> list:
         """Filter repositories based on specified criteria.
         Args:
@@ -126,6 +167,7 @@ class GitHubClient:
         query = " ".join(query_parts)
         return self.get_paginated_results(query) 
 
+    @retry_on_failure()
     def get_repository_metadata(self, repo_name: str) -> dict:
         """Retrieve metadata for a given repository.
         Args:
@@ -160,6 +202,7 @@ class GitHubClient:
         session.commit()
         session.close() 
 
+    @retry_on_failure()
     def check_test_directories(self, repo_name: str) -> bool:
         """Check for the existence of common unit test directories in a given repository.
         Args:
@@ -184,6 +227,7 @@ class GitHubClient:
         except GithubException:
             return False
 
+    @retry_on_failure()
     def check_test_files(self, repo_name: str) -> bool:
         """Check for the existence of common unit test files in a given repository.
         Args:
