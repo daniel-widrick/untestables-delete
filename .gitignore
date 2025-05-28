@@ -18,3 +18,7 @@ raindrop_import.yaml
 # Cache
 __pycache__/
 .pytest_cache/
+
+# Logs
+logs/
+*.log

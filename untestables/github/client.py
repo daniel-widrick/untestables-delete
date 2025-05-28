@@ -9,6 +9,11 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from common.logging import setup_logging, get_logger
+
+# Set up logging for this module
+setup_logging()
+logger = get_logger()
 
 class RateLimitExceeded(Exception):
     """Exception raised when the GitHub API rate limit is exceeded."""
@@ -33,17 +38,21 @@ def retry_on_failure(max_retries: int = 3, delay: float = 1.0, backoff: float = 
                     return func(*args, **kwargs)
                 except (GithubException, RateLimitExceededException) as e:
                     last_exception = e
+                    logger.warning(f"Attempt {attempt + 1}/{max_retries + 1} failed: {str(e)}")
                     if isinstance(e, RateLimitExceededException):
                         # For rate limits, wait until reset
                         reset_time = e.reset
                         wait_time = max(reset_time - time.time(), 0)
                         if wait_time > 0:
+                            logger.info(f"Rate limit exceeded. Waiting {wait_time:.2f} seconds until reset.")
                             time.sleep(wait_time)
                             continue
                     if attempt < max_retries:
+                        logger.info(f"Retrying in {current_delay:.2f} seconds...")
                         time.sleep(current_delay)
                         current_delay *= backoff
                     else:
+                        logger.error(f"All {max_retries + 1} attempts failed. Last error: {str(e)}")
                         raise last_exception
             return None
         return wrapper
@@ -77,15 +86,21 @@ class GitHubClient:
         load_dotenv()
         self.token = token or os.getenv("GITHUB_TOKEN")
         if not self.token:
+            logger.error("GitHub token not found in environment variables")
             raise ValueError("GitHub token is required. Set GITHUB_TOKEN environment variable or pass token directly.")
         
+        logger.info("Initializing GitHub client")
         self.client = Github(self.token)
         self.db_url = db_url or os.getenv("DATABASE_URL")
         if not self.db_url:
+            logger.error("Database URL not found in environment variables")
             raise ValueError("DATABASE_URL environment variable not set and no fallback provided.")
+        
+        logger.info("Initializing database connection")
         self.engine = create_engine(self.db_url)
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
+        logger.info("GitHub client initialization complete")
     
     @retry_on_failure()
     def get_rate_limit(self) -> dict:
@@ -94,12 +109,15 @@ class GitHubClient:
         Returns:
             dict: Rate limit information including remaining requests and reset time.
         """
+        logger.debug("Fetching GitHub API rate limit")
         rate_limit = self.client.get_rate_limit()
-        return {
+        info = {
             "remaining": rate_limit.core.remaining,
             "limit": rate_limit.core.limit,
             "reset_time": rate_limit.core.reset
         }
+        logger.debug(f"Rate limit info: {info}")
+        return info
     
     @retry_on_failure()
     def test_connection(self) -> bool:
@@ -108,12 +126,15 @@ class GitHubClient:
         Returns:
             bool: True if connection is successful, False otherwise.
         """
+        logger.info("Testing GitHub API connection")
         try:
             # Make a simple API call to test the connection
             self.client.get_user()
+            logger.info("GitHub API connection test successful")
             return True
-        except GithubException:
-            return False 
+        except GithubException as e:
+            logger.error(f"GitHub API connection test failed: {str(e)}")
+            return False
 
     def check_rate_limit(self, min_remaining: int = 10):
         """Check the current rate limit and raise or warn if low/exceeded.
@@ -126,9 +147,10 @@ class GitHubClient:
         """
         info = self.get_rate_limit()
         if info["remaining"] <= 0:
+            logger.error(f"Rate limit exceeded. Resets at {info['reset_time']}")
             raise RateLimitExceeded(f"GitHub API rate limit exceeded. Resets at {info['reset_time']}. Please try again later.")
         elif info["remaining"] < min_remaining:
-            print(f"Warning: GitHub API rate limit is low ({info['remaining']} remaining, resets at {info['reset_time']}).")
+            logger.warning(f"Rate limit is low: {info['remaining']} remaining, resets at {info['reset_time']}")
         return info 
 
     @retry_on_failure()
@@ -139,15 +161,19 @@ class GitHubClient:
         Returns:
             list: A list of results from all pages.
         """
+        logger.info(f"Executing search query: {query}")
         results = []
         page = 1
         while True:
             # Fetch the current page of results
+            logger.debug(f"Fetching page {page}")
             response = self.client.search_repositories(query=query, page=page)
             if not response:
                 break
             results.extend(response)
+            logger.debug(f"Found {len(response)} results on page {page}")
             page += 1
+        logger.info(f"Total results found: {len(results)}")
         return results 
 
     @retry_on_failure()
@@ -165,6 +191,7 @@ class GitHubClient:
         if keywords:
             query_parts.extend([f'"{keyword}"' for keyword in keywords])
         query = " ".join(query_parts)
+        logger.info(f"Filtering repositories with criteria: {query}")
         return self.get_paginated_results(query) 
 
     @retry_on_failure()
@@ -177,13 +204,16 @@ class GitHubClient:
         Raises:
             GithubException: If the repository is not found.
         """
+        logger.info(f"Fetching metadata for repository: {repo_name}")
         repo = self.client.get_repo(repo_name)
-        return {
+        metadata = {
             "name": repo.name,
             "description": repo.description,
             "star_count": repo.stargazers_count,
             "url": repo.html_url
-        } 
+        }
+        logger.debug(f"Repository metadata: {metadata}")
+        return metadata 
 
     def store_repository_metadata(self, metadata: dict, missing: dict) -> None:
         """Store repository metadata in the database.
@@ -191,6 +221,7 @@ class GitHubClient:
             metadata: Dictionary containing repository metadata.
             missing: Dictionary indicating which test components are missing, as returned by flag_missing_tests.
         """
+        logger.info(f"Storing metadata for repository: {metadata['name']}")
         session = self.Session()
         repo = Repository(**metadata)
         repo.missing_test_directories = missing.get("test_directories", False)
@@ -200,6 +231,7 @@ class GitHubClient:
         repo.missing_readme_mentions = missing.get("readme_mentions", False)
         session.add(repo)
         session.commit()
+        logger.debug(f"Stored repository data: {metadata['name']} with missing components: {missing}")
         session.close() 
 
     @retry_on_failure()
@@ -210,21 +242,26 @@ class GitHubClient:
         Returns:
             bool: True if test directories exist, False otherwise.
         """
+        logger.info(f"Checking test directories for repository: {repo_name}")
         repo = self.client.get_repo(repo_name)
         test_dirs = ["tests", "test"]
         try:
             # Check root directory
             contents = repo.get_contents("")
             if any(content.name in test_dirs and content.type == "dir" for content in contents):
+                logger.debug(f"Found test directory in root for {repo_name}")
                 return True
             # Check src/ directory if it exists
             src_dir = next((c for c in contents if c.name == "src" and c.type == "dir"), None)
             if src_dir:
                 src_contents = repo.get_contents("src")
                 if any(content.name in test_dirs and content.type == "dir" for content in src_contents):
+                    logger.debug(f"Found test directory in src/ for {repo_name}")
                     return True
+            logger.debug(f"No test directories found for {repo_name}")
             return False
-        except GithubException:
+        except GithubException as e:
+            logger.error(f"Error checking test directories for {repo_name}: {str(e)}")
             return False
 
     @retry_on_failure()
@@ -235,18 +272,21 @@ class GitHubClient:
         Returns:
             bool: True if test files exist, False otherwise.
         """
+        logger.info(f"Checking test files for repository: {repo_name}")
         repo = self.client.get_repo(repo_name)
         test_patterns = ["test_*.py", "*_test.py"]
         try:
             # Check root directory
             contents = repo.get_contents("")
             if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in contents if content.type == "file"):
+                logger.debug(f"Found test files in root for {repo_name}")
                 return True
             # Check src/ directory if it exists
             src_dir = next((c for c in contents if c.name == "src" and c.type == "dir"), None)
             if src_dir:
                 src_contents = repo.get_contents("src")
                 if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in src_contents if content.type == "file"):
+                    logger.debug(f"Found test files in src/ for {repo_name}")
                     return True
             # Check test directories if they exist
             test_dirs = ["tests", "test"]
@@ -255,9 +295,12 @@ class GitHubClient:
                 if test_dir:
                     test_contents = repo.get_contents(test_dir_name)
                     if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in test_contents if content.type == "file"):
+                        logger.debug(f"Found test files in {test_dir_name}/ for {repo_name}")
                         return True
+            logger.debug(f"No test files found for {repo_name}")
             return False
-        except GithubException:
+        except GithubException as e:
+            logger.error(f"Error checking test files for {repo_name}: {str(e)}")
             return False
 
     def check_test_config_files(self, repo_name: str) -> bool:
@@ -267,12 +310,16 @@ class GitHubClient:
         Returns:
             bool: True if test configuration files exist, False otherwise.
         """
+        logger.info(f"Checking test config files for repository: {repo_name}")
         repo = self.client.get_repo(repo_name)
         config_files = ["pytest.ini", "tox.ini", "nose.cfg"]
         try:
             contents = repo.get_contents("")
-            return any(content.name in config_files and content.type == "file" for content in contents)
-        except GithubException:
+            has_config = any(content.name in config_files and content.type == "file" for content in contents)
+            logger.debug(f"Test config files {'found' if has_config else 'not found'} for {repo_name}")
+            return has_config
+        except GithubException as e:
+            logger.error(f"Error checking test config files for {repo_name}: {str(e)}")
             return False
 
     def check_readme_for_test_frameworks(self, repo_name: str) -> bool:
@@ -282,13 +329,17 @@ class GitHubClient:
         Returns:
             bool: True if testing frameworks are mentioned, False otherwise.
         """
+        logger.info(f"Checking README for test frameworks in repository: {repo_name}")
         repo = self.client.get_repo(repo_name)
         try:
             readme = repo.get_readme()
             readme_content = readme.decoded_content.decode("utf-8").lower()
             test_frameworks = ["pytest", "unittest", "nose"]
-            return any(framework in readme_content for framework in test_frameworks)
-        except GithubException:
+            has_frameworks = any(framework in readme_content for framework in test_frameworks)
+            logger.debug(f"Test framework mentions {'found' if has_frameworks else 'not found'} in README for {repo_name}")
+            return has_frameworks
+        except GithubException as e:
+            logger.error(f"Error checking README for {repo_name}: {str(e)}")
             return False 
 
     def check_cicd_configs(self, repo_name: str) -> bool:
@@ -298,6 +349,7 @@ class GitHubClient:
         Returns:
             bool: True if CI/CD configurations exist, False otherwise.
         """
+        logger.info(f"Checking CI/CD configs for repository: {repo_name}")
         repo = self.client.get_repo(repo_name)
         cicd_files = [
             ".github/workflows/*.yml",  # GitHub Actions
@@ -309,9 +361,11 @@ class GitHubClient:
             try:
                 contents = repo.get_contents(file_pattern)
                 if contents:
+                    logger.debug(f"Found CI/CD config {file_pattern} for {repo_name}")
                     return True
             except GithubException:
                 continue
+        logger.debug(f"No CI/CD configs found for {repo_name}")
         return False 
 
     def flag_missing_tests(self, repo_name: str) -> dict:
@@ -321,6 +375,7 @@ class GitHubClient:
         Returns:
             dict: A dictionary indicating which test components are missing.
         """
+        logger.info(f"Checking for missing test components in repository: {repo_name}")
         missing = {
             "test_directories": not self.check_test_directories(repo_name),
             "test_files": not self.check_test_files(repo_name),
@@ -328,6 +383,7 @@ class GitHubClient:
             "cicd_configs": not self.check_cicd_configs(repo_name),
             "readme_mentions": not self.check_readme_for_test_frameworks(repo_name)
         }
+        logger.debug(f"Missing test components for {repo_name}: {missing}")
         return missing 
 
     def store_missing_tests(self, repo_name: str, missing: dict) -> None:
@@ -336,6 +392,7 @@ class GitHubClient:
             repo_name: The name of the repository (e.g., 'owner/repo').
             missing: A dictionary indicating which test components are missing, as returned by flag_missing_tests.
         """
+        logger.info(f"Storing missing test information for repository: {repo_name}")
         session = self.Session()
         # Extract just the repository name from owner/repo format
         repo_name_only = repo_name.split('/')[-1]
@@ -351,7 +408,7 @@ class GitHubClient:
         repo.missing_test_config_files = missing.get("test_config_files", False)
         repo.missing_cicd_configs = missing.get("cicd_configs", False)
         repo.missing_readme_mentions = missing.get("readme_mentions", False)
-        print(f"Updating repo {repo_name_only} with missing test info: {missing}")
+        logger.debug(f"Updating repo {repo_name_only} with missing test info: {missing}")
         session.flush()
         session.commit()
         session.close() 
