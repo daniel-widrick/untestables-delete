@@ -84,3 +84,36 @@ class GitHubClient:
             results.extend(response)
             page += 1
         return results 
+
+    def filter_repositories(self, language: str = "python", min_stars: int = 0, max_stars: int = 1000, keywords: list = None) -> list:
+        """Filter repositories based on specified criteria.
+        Args:
+            language: Primary language of the repositories (default: 'python').
+            min_stars: Minimum number of stars (default: 0).
+            max_stars: Maximum number of stars (default: 1000).
+            keywords: List of keywords to search in repository descriptions (default: None).
+        Returns:
+            list: A list of filtered repositories.
+        """
+        query_parts = [f"language:{language}", f"stars:{min_stars}..{max_stars}"]
+        if keywords:
+            query_parts.extend([f'"{keyword}"' for keyword in keywords])
+        query = " ".join(query_parts)
+        return self.get_paginated_results(query) 
+
+    def get_repository_metadata(self, repo_name: str) -> dict:
+        """Retrieve metadata for a given repository.
+        Args:
+            repo_name: The name of the repository (e.g., 'owner/repo').
+        Returns:
+            dict: Repository metadata including name, description, star count, and URL.
+        Raises:
+            GithubException: If the repository is not found.
+        """
+        repo = self.client.get_repo(repo_name)
+        return {
+            "name": repo.name,
+            "description": repo.description,
+            "star_count": repo.stargazers_count,
+            "url": repo.html_url
+        } 

@@ -12,14 +12,14 @@ This document outlines the requirements for an application designed to identify 
 
 ### **Search Criteria**
 
-- [ ] Filter repositories based on:
+- [x] Filter repositories based on:
   - Primary language set to Python.
   - Star count range (e.g., 5 to 1,000 stars).
   - Additional keyword searches in repository descriptions.
 
 ### **Initial Data Extraction**
 
-- [ ] Retrieve repository metadata including:
+- [x] Retrieve repository metadata including:
   - Name
   - Description
   - Star count

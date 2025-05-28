@@ -122,4 +122,43 @@ def test_get_paginated_results_single_page(mock_github):
     client = GitHubClient(token="test_token")
     results = client.get_paginated_results("test query")
     assert len(results) == 2
-    assert results == mock_page 
+    assert results == mock_page
+
+def test_filter_repositories_with_criteria(mock_github):
+    """Test that filter_repositories correctly filters repositories based on criteria."""
+    mock_repos = [MagicMock(), MagicMock()]
+    mock_github.return_value.search_repositories.side_effect = [mock_repos, []]
+    client = GitHubClient(token="test_token")
+    results = client.filter_repositories(language="python", min_stars=5, max_stars=1000, keywords=["test"])
+    assert len(results) == 2
+    assert results == mock_repos
+
+def test_filter_repositories_no_matches(mock_github):
+    """Test that filter_repositories handles no matching repositories gracefully."""
+    mock_github.return_value.search_repositories.return_value = []
+    client = GitHubClient(token="test_token")
+    results = client.filter_repositories(language="python", min_stars=1000, max_stars=2000)
+    assert len(results) == 0
+
+def test_get_repository_metadata(mock_github):
+    """Test that get_repository_metadata correctly extracts and returns repository metadata."""
+    mock_repo = MagicMock()
+    mock_repo.name = "test-repo"
+    mock_repo.description = "A test repository"
+    mock_repo.stargazers_count = 100
+    mock_repo.html_url = "https://github.com/owner/test-repo"
+    mock_github.return_value.get_repo.return_value = mock_repo
+    client = GitHubClient(token="test_token")
+    metadata = client.get_repository_metadata("owner/test-repo")
+    assert metadata["name"] == "test-repo"
+    assert metadata["description"] == "A test repository"
+    assert metadata["star_count"] == 100
+    assert metadata["url"] == "https://github.com/owner/test-repo"
+
+def test_get_repository_metadata_not_found(mock_github):
+    """Test that get_repository_metadata handles repository not found gracefully."""
+    from github.GithubException import GithubException
+    mock_github.return_value.get_repo.side_effect = GithubException(404, "Not Found")
+    client = GitHubClient(token="test_token")
+    with pytest.raises(GithubException):
+        client.get_repository_metadata("owner/nonexistent-repo") 
