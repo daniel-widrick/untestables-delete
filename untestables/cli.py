@@ -2,8 +2,25 @@ import click
 import os
 from datetime import datetime
 from typing import Optional
-from untestables.github.client import GitHubClient
+# Import common.logging first to set up logging
 from common.logging import setup_logging, get_logger
+
+# --- Setup logging early ---
+# Ensure the logs directory exists
+LOGS_DIR = 'logs'
+os.makedirs(LOGS_DIR, exist_ok=True)
+# Generate a timestamped log file name
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+log_file = os.path.join(LOGS_DIR, f'untestables_{timestamp}.log')
+# Configure logging
+setup_logging(log_file)
+# --- Logging is now set up ---
+
+# Now import GitHubClient, which calls get_logger() at its module level
+from untestables.github.client import GitHubClient
+
+# Get a logger instance for this cli.py module
+logger = get_logger()
 
 @click.command()
 @click.option('--min-stars', type=int, default=5, help='Minimum number of stars')
@@ -12,12 +29,8 @@ from common.logging import setup_logging, get_logger
 @click.option('--force-rescan', is_flag=True, help='Force re-scan of all repositories, ignoring last scan time')
 def main(min_stars: int, max_stars: int, rescan_days: Optional[int] = None, force_rescan: bool = False) -> None:
     """Find Python repositories that need unit tests."""
-    # Set up logging with a timestamped log file
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_file = f'logs/untestables_{timestamp}.log'
-    os.makedirs('logs', exist_ok=True)
-    setup_logging(log_file)
-    logger = get_logger()
+    # Logging is already set up. The logger instance is available globally in this module.
+    # No need to call setup_logging() or get_logger() here again.
     
     logger.info(f"Starting repository search with {min_stars} to {max_stars} stars")
     if rescan_days:
@@ -59,11 +72,11 @@ def main(min_stars: int, max_stars: int, rescan_days: Optional[int] = None, forc
         # Analyze each repository
         for repo in repos:
             repo_name = repo.full_name
-            repo_name_only = repo_name.split('/')[-1]
+            repo_url = repo.html_url
             
             # Skip if recently scanned and not forcing re-scan
-            if not force_rescan and repo_name_only in recently_scanned:
-                logger.info(f"Skipping {repo_name} - recently scanned")
+            if not force_rescan and repo_url in recently_scanned:
+                logger.info(f"Skipping {repo_name} ({repo_url}) - recently scanned")
                 continue
                 
             logger.info(f"Analyzing repository: {repo_name}")

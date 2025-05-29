@@ -9,58 +9,62 @@ import logging
 import sys
 from typing import Optional
 
-logger = None
-
+# Global variable to hold the specifically configured application logger instance.
+# Using a more descriptive name for the logger itself, e.g., "untestables_app_logger".
+_app_logger: Optional[logging.Logger] = None
+_APP_LOGGER_NAME = "untestables_app" # Choose a fixed name for your application logger
 
 def setup_logging(log_file: Optional[str] = None) -> None:
     """
-    Initialize logger and log format.
-
-    Parameters
-    ----------
-    log_file : str, optional
-        Path to the log file. If provided, logs will be written to this file in addition to console output.
+    Initialize or reconfigure the shared application logger.
+    This function should be called once at the application's start.
     """
-    global logger
+    global _app_logger
+
+    if _app_logger is None:
+        _app_logger = logging.getLogger(_APP_LOGGER_NAME)
+        _app_logger.setLevel(logging.INFO)
+    else:
+        # If called again, clear existing handlers to avoid duplication
+        # This might happen if setup_logging is inadvertently called multiple times,
+        # though the goal is to call it once from cli.py at the very start.
+        for handler in _app_logger.handlers[:]:
+            _app_logger.removeHandler(handler)
+
     log_format = "%(asctime)s | %(levelname)8s | %(message)s"
     formatter = logging.Formatter(log_format)
 
-    # Create console handler
-    console_handler = logging.StreamHandler(stream=sys.stdout)
+    # Create and add console handler
+    console_handler = logging.StreamHandler(stream=sys.stdout) # Explicitly stdout
     console_handler.setFormatter(formatter)
+    _app_logger.addHandler(console_handler)
 
-    # Initialize handlers list
-    handlers = [console_handler]
-
-    # Add file handler if log file is provided
+    # Create and add file handler if log_file is provided
     if log_file:
         try:
             file_handler = logging.FileHandler(log_file, mode='a')
             file_handler.setFormatter(formatter)
-            handlers.append(file_handler)
+            _app_logger.addHandler(file_handler)
+            # This print is outside of the logging system, so it's fine.
+            # It gives immediate feedback that file logging is attempted.
             print(f"Logging to file: {log_file}")
         except Exception as e:
-            print(f"Warning: Could not set up logging to file {log_file}: {e}")
+            # Also print this to stderr directly, as logger might not be fully up.
+            print(f"Warning: Could not set up logging to file {log_file}: {e}", file=sys.stderr)
 
-    # Configure root logger
-    logging.basicConfig(level=logging.INFO, format=log_format)
+    # Important: Prevent messages from this logger from propagating to the root logger.
+    # The root logger might have default handlers (e.g., from a previous basicConfig call
+    # by another library, or Python's default).
+    _app_logger.propagate = False
 
-    # Configure module logger
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
-
-    # Remove any existing handlers to avoid duplicates
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-
-    # Add handlers to module logger
-    for handler in handlers:
-        logger.addHandler(handler)
-
+    # DO NOT call logging.basicConfig(). We are manually configuring handlers
+    # for our specific application logger (_app_logger).
+    # logging.basicConfig() configures the root logger and can add handlers
+    # that would lead to duplicate messages if _app_logger also propagates.
 
 def get_logger() -> logging.Logger:
     """
-    Get the configured logger instance.
+    Get the configured shared application logger instance.
 
     Returns
     -------
@@ -72,6 +76,11 @@ def get_logger() -> logging.Logger:
     RuntimeError
         If setup_logging has not been called before this function.
     """
-    if logger is None:
-        raise RuntimeError("Logger not initialized. Call setup_logging() first.")
-    return logger
+    global _app_logger
+    if _app_logger is None:
+        # This state indicates an issue in the application's startup sequence.
+        # setup_logging() in cli.py should always be called first.
+        raise RuntimeError(
+            "Logger not initialized. Call setup_logging() from the main application entry point first."
+        )
+    return _app_logger

@@ -14,7 +14,7 @@ from common.logging import setup_logging, get_logger  # Assuming this path is co
 from datetime import datetime, timedelta
 
 # Set up logging for this module
-setup_logging()  # Ensure this doesn't cause duplicate handlers if called elsewhere too
+# setup_logging() # Removed: Logging should be configured by the application entry point (e.g., cli.py)
 logger = get_logger()
 
 
@@ -123,7 +123,7 @@ class GitHubClient:
             raise ValueError("GitHub token is required. Set GITHUB_TOKEN environment variable or pass token directly.")
 
         logger.info("Initializing GitHub client")
-        self.client = Github(self.token)  # PyGithub client
+        self.client = Github(self.token, per_page=100)  # PyGithub client, explicitly set per_page
         self.db_url = db_url or os.getenv("DATABASE_URL")
         if not self.db_url:
             logger.error("Database URL not found in environment variables")
@@ -189,84 +189,40 @@ class GitHubClient:
             logger.warning(f"Rate limit is low: {info['remaining']} remaining, resets at {reset_time_str}")
         return info
 
+# In client.py (client_v3.py)
     @retry_on_failure()
-    def get_paginated_results(self, query: str, per_page: int = 30) -> list:  # Added per_page
-        """Retrieve paginated results from the GitHub API.
-        Args:
-            query: The search query to execute.
-            per_page: Number of results to fetch per page (default 30, max 100 for search).
-        Returns:
-            list: A list of results from all pages (up to GitHub's search API limit of 1000 results).
-        """
-        logger.info(f"Executing search query: {query} with {per_page} results per page.")
+    def get_paginated_results(self, query: str, per_page: int = 30) -> list:
+        logger.info(f"Executing search query: {query}. PyGithub client default per_page is used.")
         results = []
-        current_page_number = 0  # .get_page() is 0-indexed
-        fetched_count_total = 0
-        MAX_RESULTS = 1000
+        MAX_RESULTS = 1000 # GitHub API limit for search results
 
         self.check_rate_limit() # Initial check
         try:
-            # Get the PaginatedList object ONCE.
-            # Note: PyGithub's search_repositories might internally set per_page if not specified,
-            # or it might fetch a default number for the first .get_page(0) call then adjust.
-            # To be explicit, pass per_page here if the underlying library uses it for the list object itself.
-            # However, the `page` kwarg in search_repositories is for specific page fetching, not for the list object.
-            # The most common way is to get the list, then iterate pages.
-            # For PyGithub, if you pass `per_page` to `search_repositories` it should influence the PaginatedList.
-            # The client code was using `page` kwarg inside the loop previously, which was problematic.
-            
-            # Let's assume self.client.search_repositories(query) returns a PaginatedList
-            # that can be paginated with .get_page(i). The `per_page` for `get_page` is usually
-            # determined by how the PaginatedList was initially fetched or a default.
-            # To be safe, let's see if PyGithub's search_repositories takes per_page for the main object.
-            # Yes, `search_repositories` can take `per_page` for the PaginatedList object it returns.
-            paginated_list_object = self.client.search_repositories(query=query, per_page=per_page)
+            # The per_page argument to search_repositories can sometimes be finicky or ignored
+            # if the client itself has a per_page default. We set it on client init.
+            paginated_list_object = self.client.search_repositories(query=query)
             logger.debug(f"Obtained PaginatedList for query: {query}")
 
-            while True:
-                if fetched_count_total >= MAX_RESULTS:
-                    logger.info(f"Reached GitHub API search limit of {MAX_RESULTS} results for query: {query}")
+            # Iterate directly over the PaginatedList. PyGithub handles pagination.
+            # We only need to cap the total number of results collected.
+            for i, repo in enumerate(paginated_list_object):
+                if len(results) >= MAX_RESULTS:
+                    logger.info(f"Reached GitHub API search result limit of {MAX_RESULTS}. Halting collection.")
                     break
-
-                # self.check_rate_limit() # Check before each page fetch if desired, though one at start and retry decorator might be enough
-                logger.debug(f"Fetching page number {current_page_number} (0-indexed)")
-                
-                current_page_items = list(paginated_list_object.get_page(current_page_number))
-
-                if not current_page_items:
-                    logger.debug(f"No results on page {current_page_number}. Ending pagination.")
-                    break
-                
-                # Determine how many items to add to respect MAX_RESULTS
-                remaining_capacity = MAX_RESULTS - fetched_count_total
-                items_to_add = current_page_items[:remaining_capacity]
-                
-                results.extend(items_to_add)
-                fetched_count_total += len(items_to_add)
-                logger.debug(
-                    f"Found {len(current_page_items)} results on actual page {current_page_number}. Added {len(items_to_add)}. Total fetched so far: {fetched_count_total}."
-                )
-
-                # If fewer items were returned than per_page, it's the last page OR if we took a partial page due to MAX_RESULTS
-                if len(current_page_items) < per_page or len(items_to_add) < len(current_page_items):
-                    logger.debug(
-                        f"Fetched {len(current_page_items)} (added {len(items_to_add)}), which is less than per_page ({per_page}) or limited by MAX_RESULTS. Assuming last page or limit hit."
-                    )
-                    break
-                
-                current_page_number += 1
-                # Safety break if something goes wrong with page counts, though MAX_RESULTS should handle it.
-                if current_page_number > (MAX_RESULTS // per_page) + 2: 
-                    logger.warning(f"Exceeded maximum expected pages for {MAX_RESULTS} results. Breaking loop.")
-                    break
-        
+                results.append(repo)
+                if (i + 1) % 100 == 0: # Log progress every 100 repos fetched by the iterator
+                    logger.debug(f"Collected {len(results)} repositories so far for query '{query}'...")
+            
         except GithubException as e:
-            logger.error(f"Error during pagination for query '{query}' on page {current_page_number}: {e}")
-            # Retry decorator will handle retries. Re-raise if necessary or handle.
-            raise 
+            logger.error(f"Error during search for query '{query}': {e}")
+            # Depending on the error, you might want to raise it or handle it gracefully.
+            # For instance, RateLimitExceededException is already handled by the decorator.
+            if not isinstance(e, RateLimitExceededException): # Avoid re-raising if decorator handles it
+                raise
 
         logger.info(f"Total results collected for query '{query}': {len(results)} (capped at {MAX_RESULTS} if applicable)")
         return results
+
 
     @retry_on_failure()
     def filter_repositories(self, language: str = "Python", min_stars: int = 0, max_stars: int = 1000,
