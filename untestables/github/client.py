@@ -9,65 +9,91 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from common.logging import setup_logging, get_logger
+from common.logging import setup_logging, get_logger  # Assuming this path is correct relative to where client.py is run
 from datetime import datetime, timedelta
 
 # Set up logging for this module
-setup_logging()
+setup_logging()  # Ensure this doesn't cause duplicate handlers if called elsewhere too
 logger = get_logger()
+
 
 class RateLimitExceeded(Exception):
     """Exception raised when the GitHub API rate limit is exceeded."""
     pass
 
+
 def retry_on_failure(max_retries: int = 3, delay: float = 1.0, backoff: float = 2.0):
     """Decorator to retry a function on failure.
-    
+
     Args:
         max_retries: Maximum number of retry attempts.
         delay: Initial delay between retries in seconds.
         backoff: Multiplier for delay after each retry.
     """
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs) -> Any:
             current_delay = delay
             last_exception = None
-            
+
             for attempt in range(max_retries + 1):
                 try:
                     return func(*args, **kwargs)
-                except (GithubException, RateLimitExceededException) as e:
+                except (GithubException,
+                        RateLimitExceededException) as e:  # RateLimitExceededException is from PyGithub
                     last_exception = e
                     logger.warning(f"Attempt {attempt + 1}/{max_retries + 1} failed: {str(e)}")
-                    if isinstance(e, RateLimitExceededException):
+                    if isinstance(e, RateLimitExceededException):  # PyGithub's exception
                         # For rate limits, wait until reset
-                        reset_time = e.reset
-                        wait_time = max(reset_time - time.time(), 0)
-                        if wait_time > 0:
-                            logger.info(f"Rate limit exceeded. Waiting {wait_time:.2f} seconds until reset.")
-                            time.sleep(wait_time)
-                            continue
+                        # PyGithub's RateLimitExceededException has a data attribute which contains headers
+                        # The reset time is typically available in e.data.get('X-RateLimit-Reset') or similar
+                        # However, the PyGithub object itself provides a get_rate_limit().core.reset
+                        # It's better to use the client's get_rate_limit method if possible,
+                        # but here we react to an exception that just occurred.
+                        # The RateLimitExceededException from PyGithub doesn't directly give a datetime reset object.
+                        # We'll rely on the higher-level check_rate_limit or the decorator's delay for now.
+                        # A more sophisticated handling might involve trying to parse e.data or calling client.get_rate_limit()
+                        # For simplicity, this retry decorator will use its timed backoff for RateLimitExceededException too.
+                        # A specific check could be:
+                        # gh_client_instance = args[0] # Assuming 'self' is the first arg for methods
+                        # if hasattr(gh_client_instance, 'client'):
+                        #    reset_time_unix = gh_client_instance.client.get_rate_limit().core.reset.timestamp()
+                        #    wait_time = max(reset_time_unix - time.time(), 0)
+                        #    logger.info(f"GitHub API Rate limit likely exceeded. Waiting {wait_time:.2f} seconds until reset.")
+                        #    time.sleep(wait_time)
+                        #    current_delay = 0 # Reset delay as we've waited for the API reset
+                        # else:
+                        #    logger.warning("Could not determine GitHub client instance to check rate limit reset time.")
+                        pass  # Default backoff will apply. For more specific rate limit waiting, it's handled in check_rate_limit
+
                     if attempt < max_retries:
                         logger.info(f"Retrying in {current_delay:.2f} seconds...")
                         time.sleep(current_delay)
                         current_delay *= backoff
                     else:
                         logger.error(f"All {max_retries + 1} attempts failed. Last error: {str(e)}")
-                        raise last_exception
-            return None
+                        raise last_exception  # Re-raise the last caught exception
+            return None  # Should not be reached if max_retries >= 0, as func is called or exception raised
+
         return wrapper
+
     return decorator
 
+
 Base = declarative_base()
+
 
 class Repository(Base):
     __tablename__ = 'repositories'
     id = Column(Integer, primary_key=True)
-    name = Column(String(255), nullable=False)
+    name = Column(String(255), nullable=False)  # Repository name (e.g., "my-project")
     description = Column(Text, nullable=True)
     star_count = Column(Integer, nullable=False)
-    url = Column(String(255), nullable=False)
+    url = Column(String(255), nullable=False)  # HTML URL (e.g., "https://github.com/owner/my-project")
+    # Consider adding full_name (e.g., "owner/my-project") if you need to ensure uniqueness across owners
+    # and for easier matching if get_recently_scanned_repos returns full_name.
+    # full_name = Column(String(511), nullable=False, unique=True) # Example
     missing_test_directories = Column(Boolean, nullable=False)
     missing_test_files = Column(Boolean, nullable=False)
     missing_test_config_files = Column(Boolean, nullable=False)
@@ -76,12 +102,13 @@ class Repository(Base):
     last_scanned_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     language = Column(String(50), nullable=True)
 
+
 class GitHubClient:
     """Client for interacting with the GitHub API."""
-    
+
     def __init__(self, token: Optional[str] = None, db_url: Optional[str] = None, load_env: bool = True):
         """Initialize the GitHub client.
-        
+
         Args:
             token: GitHub personal access token. If not provided, will try to load from GITHUB_TOKEN env var.
             db_url: Database URL. If not provided, will try to load from DATABASE_URL env var.
@@ -93,48 +120,47 @@ class GitHubClient:
         if not self.token:
             logger.error("GitHub token not found in environment variables")
             raise ValueError("GitHub token is required. Set GITHUB_TOKEN environment variable or pass token directly.")
-        
+
         logger.info("Initializing GitHub client")
-        self.client = Github(self.token)
+        self.client = Github(self.token)  # PyGithub client
         self.db_url = db_url or os.getenv("DATABASE_URL")
         if not self.db_url:
             logger.error("Database URL not found in environment variables")
             raise ValueError("DATABASE_URL environment variable not set and no fallback provided.")
-        
+
         logger.info("Initializing database connection")
         self.engine = create_engine(self.db_url)
-        Base.metadata.create_all(self.engine)
+        Base.metadata.create_all(self.engine)  # Creates tables if they don't exist
         self.Session = sessionmaker(bind=self.engine)
         logger.info("GitHub client initialization complete")
-    
+
     @retry_on_failure()
     def get_rate_limit(self) -> dict:
         """Get the current rate limit information.
-        
+
         Returns:
             dict: Rate limit information including remaining requests and reset time.
         """
         logger.debug("Fetching GitHub API rate limit")
-        rate_limit = self.client.get_rate_limit()
+        rate_limit = self.client.get_rate_limit()  # PyGithub's rate limit object
         info = {
             "remaining": rate_limit.core.remaining,
             "limit": rate_limit.core.limit,
-            "reset_time": rate_limit.core.reset
+            "reset_time": rate_limit.core.reset  # This is a datetime object
         }
         logger.debug(f"Rate limit info: {info}")
         return info
-    
+
     @retry_on_failure()
     def test_connection(self) -> bool:
         """Test the GitHub API connection.
-        
+
         Returns:
             bool: True if connection is successful, False otherwise.
         """
         logger.info("Testing GitHub API connection")
         try:
-            # Make a simple API call to test the connection
-            self.client.get_user()
+            self.client.get_user()  # A simple call to verify authentication and connection
             logger.info("GitHub API connection test successful")
             return True
         except GithubException as e:
@@ -146,48 +172,149 @@ class GitHubClient:
         Args:
             min_remaining: Minimum number of requests that should remain before warning/raising.
         Raises:
-            RateLimitExceeded: If the rate limit is exceeded.
+            RateLimitExceeded: If the rate limit is exceeded (custom exception).
         Returns:
             dict: The current rate limit info.
         """
         info = self.get_rate_limit()
         if info["remaining"] <= 0:
-            logger.error(f"Rate limit exceeded. Resets at {info['reset_time']}")
-            raise RateLimitExceeded(f"GitHub API rate limit exceeded. Resets at {info['reset_time']}. Please try again later.")
+            reset_time_str = info['reset_time'].strftime('%Y-%m-%d %H:%M:%S UTC')
+            logger.error(f"Rate limit exceeded. Resets at {reset_time_str}")
+            # Raise your custom exception. The retry decorator might catch PyGithub's RateLimitExceededException.
+            raise RateLimitExceeded(
+                f"GitHub API rate limit exceeded. Resets at {reset_time_str}. Please try again later.")
         elif info["remaining"] < min_remaining:
-            logger.warning(f"Rate limit is low: {info['remaining']} remaining, resets at {info['reset_time']}")
-        return info 
+            reset_time_str = info['reset_time'].strftime('%Y-%m-%d %H:%M:%S UTC')
+            logger.warning(f"Rate limit is low: {info['remaining']} remaining, resets at {reset_time_str}")
+        return info
 
     @retry_on_failure()
-    def get_paginated_results(self, query: str) -> list:
+    def get_paginated_results(self, query: str, per_page: int = 30) -> list:  # Added per_page
         """Retrieve paginated results from the GitHub API.
         Args:
             query: The search query to execute.
+            per_page: Number of results to fetch per page (default 30, max 100 for search).
         Returns:
-            list: A list of results from all pages.
+            list: A list of results from all pages (up to GitHub's search API limit of 1000 results).
         """
-        logger.info(f"Executing search query: {query}")
+        logger.info(f"Executing search query: {query} with {per_page} results per page.")
         results = []
-        page = 1
+        # PyGithub's search_repositories returns a PaginatedList.
+        # We can iterate directly over it, and it handles pagination.
+        # However, the original code manages pages manually, which is also fine.
+        # GitHub search API returns a maximum of 1000 results.
+
+        # Using explicit pagination as in the original code:
+        current_page_number = 1  # PyGithub uses 1-based indexing for pages if 'page' is passed.
+        fetched_count_total = 0
+
         while True:
-            # Fetch the current page of results
-            logger.debug(f"Fetching page {page}")
-            response = self.client.search_repositories(query=query, page=page)
-            if not response or response.totalCount == 0:
-                break
-            # Convert PaginatedList to list and extend results
-            page_results = list(response)
-            results.extend(page_results)
-            logger.debug(f"Found {len(page_results)} results on page {page}")
-            # Check if we've reached the end
-            if len(page_results) < 29:  # GitHub's default page size
-                break
-            page += 1
-        logger.info(f"Total results found: {len(results)}")
-        return results 
+            self.check_rate_limit()  # Check before making a call
+            logger.debug(f"Fetching page {current_page_number}")
+            # The 'page' parameter in search_repositories is for manual pagination control.
+            # If you iterate directly on search_repositories(query).get_page(i), that's one way.
+            # The original code implies it gets a PaginatedList and then processes it.
+            # Let's stick to a clear manual pagination:
+            try:
+                # Note: The `page` parameter in `search_repositories` is not the page number
+                # in the way one might expect for simple iteration.
+                # It's better to iterate through the PaginatedList or use its .get_page(i) method.
+                # For simplicity and to respect the original structure if it relied on `page` kwarg:
+                # paginated_list = self.client.search_repositories(query=query, per_page=per_page) # Get the full list object
+                # page_results = list(paginated_list.get_page(current_page_number -1)) # .get_page is 0-indexed
+
+                # A simpler way to handle pagination with PyGithub is to iterate
+                # but if we need to control pages explicitly or have seen issues:
+                paginated_list_for_page = self.client.search_repositories(query=query, **{'per_page': per_page,
+                                                                                          'page': current_page_number})
+
+                # Convert the current page of PaginatedList to a list
+                # This might re-fetch if not careful. The intent of original was likely:
+                # 1. Get a page. 2. Add its items. 3. Check if last page.
+
+                # Simpler: Iterate the paginated list directly up to the 1000 item limit
+                # if current_page_number == 1: # Only create the generator once
+                #    search_results_generator = self.client.search_repositories(query=query, per_page=per_page)
+
+                # Sticking to the spirit of manual page fetching:
+                # The `page` parameter of `search_repositories` is tricky.
+                # It's often better to just iterate the PaginatedList object.
+                # If we must do it manually by page number:
+
+                # The provided code `self.client.search_repositories(query=query, page=page)`
+                # might not work as expected if `per_page` isn't also specified or if the
+                # `page` parameter has specific interactions with PyGithub's internal state.
+                # A more robust way to get a specific page if `search_repositories` is called repeatedly:
+
+                # Let's try to fix the original loop structure:
+                # The `page` parameter to `search_repositories` is not standard for PyGithub's top-level search.
+                # Usually, you get the PaginatedList once, then call .get_page(index) on it.
+                # To avoid fetching all 1000 results into memory if not needed, we'll iterate.
+
+                # Simplified and more standard PyGithub iteration:
+                if current_page_number == 1:  # First time, get the PaginatedList
+                    all_pages_iterator = self.client.search_repositories(query=query, per_page=per_page)
+                    # We are limited to 1000 results by GitHub Search API
+                    # If totalCount is available and small, we can optimize, but PaginatedList handles it.
+
+                # Get the items for the "current conceptual page"
+                page_results = []
+                # The .get_page(i) method is useful if you have the PaginatedList object
+                # For now, let's assume the original intent was to iterate through it.
+                # The loop below is more PyGithub idiomatic for consuming the results.
+                # The original loop was trying to manually control pages, which can be complex.
+
+                # Corrected manual pagination style:
+                # This is if search_repositories must be called for each page, which isn't typical.
+                # For now, assuming the 'page' parameter to client.search_repositories was intended to work.
+                # response = self.client.search_repositories(query=query, per_page=per_page, page=current_page_number) # Fails, page not a direct param here this way for pagination
+
+                # The most robust way if not iterating the whole PaginatedList object directly:
+                # Get the paginated list object
+                response_paginated_list = self.client.search_repositories(
+                    query=query)  # specify per_page if desired, e.g., per_page=100
+
+                # To get a specific page (0-indexed)
+                current_page_items = list(response_paginated_list.get_page(current_page_number - 1))
+
+                if not current_page_items:  # No more items on this page, means we're done
+                    logger.debug(f"No results on page {current_page_number}. Ending pagination.")
+                    break
+
+                results.extend(current_page_items)
+                fetched_count_total += len(current_page_items)
+                logger.debug(
+                    f"Found {len(current_page_items)} results on page {current_page_number}. Total fetched so far: {fetched_count_total}.")
+
+                # GitHub Search API limit
+                if fetched_count_total >= 1000:
+                    logger.info(f"Reached GitHub API search limit of 1000 results for query: {query}")
+                    break
+
+                # Check if this was the last page based on the number of items received
+                # If per_page is, e.g., 30, and we got < 30, it's the last page.
+                if len(current_page_items) < per_page:  # Use the passed per_page value
+                    logger.debug(
+                        f"Fetched {len(current_page_items)} items, which is less than per_page ({per_page}). Assuming last page.")
+                    break
+
+                current_page_number += 1
+                if current_page_number > (
+                        1000 // per_page) + 1:  # Safety break for >1000 items / ~34 pages for per_page=30
+                    logger.warning("Exceeded maximum expected pages for 1000 results. Breaking.")
+                    break
+
+            except GithubException as e:
+                logger.error(f"Error fetching page {current_page_number} for query '{query}': {e}")
+                # Depending on the error, might want to break or retry (retry is handled by decorator)
+                raise  # Re-raise to be caught by decorator or calling code
+
+        logger.info(f"Total results found for query '{query}': {len(results)}")
+        return results
 
     @retry_on_failure()
-    def filter_repositories(self, language: str = "python", min_stars: int = 0, max_stars: int = 1000, keywords: list = None) -> list:
+    def filter_repositories(self, language: str = "Python", min_stars: int = 0, max_stars: int = 1000,
+                            keywords: list = None) -> list:
         """Filter repositories based on specified criteria.
         Args:
             language: Primary language of the repositories (default: 'python').
@@ -197,186 +324,247 @@ class GitHubClient:
         Returns:
             list: A list of filtered repositories.
         """
-        query_parts = [f"language:{language}", f"stars:{min_stars}..{max_stars}"]
+        query_parts = []
+        if language:  # Ensure language is only added if provided
+            query_parts.append(f"language:{language}")
+
+        # GitHub search for stars: "stars:min..max", "stars:>=min", "stars:<=max"
+        if min_stars == 0 and max_stars is None:  # No star filter
+            pass
+        elif max_stars is None:  # Only min_stars
+            query_parts.append(f"stars:>={min_stars}")
+        elif min_stars == 0:  # Only max_stars (effectively 0..max_stars)
+            query_parts.append(f"stars:0..{max_stars}")
+        else:  # Both min and max stars
+            query_parts.append(f"stars:{min_stars}..{max_stars}")
+
         if keywords:
-            query_parts.extend([f'"{keyword}"' for keyword in keywords])
+            query_parts.extend([f'"{keyword}"' for keyword in keywords])  # Quotes for exact phrase
         query = " ".join(query_parts)
-        logger.info(f"Filtering repositories with criteria: {query}")
-        return self.get_paginated_results(query) 
+        logger.info(f"Filtering repositories with query: {query}")
+        # Let's use a higher per_page value for search, default 100 for search API is good.
+        return self.get_paginated_results(query, per_page=100)
 
     @retry_on_failure()
     def get_repository_metadata(self, repo_name: str, language: str = "python") -> dict:
         """Retrieve metadata for a given repository, including language."""
         logger.info(f"Fetching metadata for repository: {repo_name}")
-        repo = self.client.get_repo(repo_name)
+        repo = self.client.get_repo(repo_name)  # repo_name should be "owner/repo"
         metadata = {
-            "name": repo.name,
+            "name": repo.name,  # Just the repo name
             "description": repo.description,
             "star_count": repo.stargazers_count,
-            "url": repo.html_url,
-            "language": getattr(repo, "language", language) or language
+            "url": repo.html_url,  # Full HTML URL
+            "language": getattr(repo, "language", language) or language  # Primary language
+            # "full_name": repo.full_name # "owner/repo" - good to store if not using URL as unique ID
         }
         logger.debug(f"Repository metadata: {metadata}")
-        return metadata 
+        return metadata
 
     def store_repository_metadata(self, metadata: dict, missing: dict) -> None:
         """Store repository metadata in the database, including language."""
-        logger.info(f"Storing metadata for repository: {metadata['name']}")
+        # This function assumes 'metadata' contains a 'name' key which is the simple repo name.
+        # If your DB needs to be unique on 'owner/repo', ensure 'name' reflects that or use a different field.
+        logger.info(
+            f"Storing metadata for repository: {metadata.get('full_name', metadata.get('name'))}")  # Log full_name if available
         session = self.Session()
-        repo = Repository(**metadata)
-        repo.missing_test_directories = missing.get("test_directories", False)
-        repo.missing_test_files = missing.get("test_files", False)
-        repo.missing_test_config_files = missing.get("test_config_files", False)
-        repo.missing_cicd_configs = missing.get("cicd_configs", False)
-        repo.missing_readme_mentions = missing.get("readme_mentions", False)
-        repo.last_scanned_at = datetime.utcnow()
-        session.add(repo)
-        session.commit()
-        logger.debug(f"Stored repository data: {metadata['name']} with missing components: {missing}")
-        session.close()
+        try:
+            # Consider how to handle existing repositories. Update or skip?
+            # If 'name' in the DB is just repo.name, then ownerA/repoX and ownerB/repoX could clash
+            # if not handled. If url is unique, that's better.
+            # repo_to_store = Repository(**metadata) # This will fail if metadata has extra keys like 'full_name' not in model init
+
+            repo_data_for_model = {
+                "name": metadata["name"],
+                "description": metadata["description"],
+                "star_count": metadata["star_count"],
+                "url": metadata["url"],
+                "language": metadata["language"],
+                "missing_test_directories": missing.get("test_directories", False),
+                "missing_test_files": missing.get("test_files", False),
+                "missing_test_config_files": missing.get("test_config_files", False),
+                "missing_cicd_configs": missing.get("cicd_configs", False),
+                "missing_readme_mentions": missing.get("readme_mentions", False),
+                "last_scanned_at": datetime.utcnow()
+            }
+
+            # Check if repo already exists by URL (which should be unique)
+            existing_repo = session.query(Repository).filter_by(url=metadata["url"]).first()
+            if existing_repo:
+                logger.debug(f"Repository {metadata['url']} already exists. Updating.")
+                for key, value in repo_data_for_model.items():
+                    setattr(existing_repo, key, value)
+                repo_to_store = existing_repo
+            else:
+                logger.debug(f"New repository: {metadata['url']}. Creating.")
+                repo_to_store = Repository(**repo_data_for_model)
+                session.add(repo_to_store)
+
+            session.commit()
+            logger.debug(f"Stored/Updated repository data: {metadata.get('full_name', metadata['name'])}")
+        except Exception as e:
+            logger.error(f"Error storing repository metadata for {metadata.get('url')}: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     @retry_on_failure()
-    def check_test_directories(self, repo_name: str) -> bool:
-        """Check for the existence of common unit test directories in a given repository.
-        Args:
-            repo_name: The name of the repository (e.g., 'owner/repo').
-        Returns:
-            bool: True if test directories exist, False otherwise.
-        """
+    def check_test_directories(self, repo_name: str) -> bool:  # repo_name is "owner/repo"
+        """Check for the existence of common unit test directories in a given repository."""
         logger.info(f"Checking test directories for repository: {repo_name}")
         repo = self.client.get_repo(repo_name)
-        test_dirs = ["tests", "test"]
+        test_dirs = ["tests", "test", "testfiles", "unittests"]  # Added more common names
+        # Common top-level or src-level test directories
+        paths_to_check = [""]  # Root
         try:
-            # Check root directory
-            contents = repo.get_contents("")
-            if any(content.name in test_dirs and content.type == "dir" for content in contents):
-                logger.debug(f"Found test directory in root for {repo_name}")
-                return True
-            # Check src/ directory if it exists
-            src_dir = next((c for c in contents if c.name == "src" and c.type == "dir"), None)
-            if src_dir:
-                src_contents = repo.get_contents("src")
-                if any(content.name in test_dirs and content.type == "dir" for content in src_contents):
-                    logger.debug(f"Found test directory in src/ for {repo_name}")
-                    return True
-            logger.debug(f"No test directories found for {repo_name}")
-            return False
+            # Check if 'src' directory exists at root, if so, add "src/" to paths to check for tests
+            root_contents = repo.get_contents("")
+            if any(content.name == "src" and content.type == "dir" for content in root_contents):
+                paths_to_check.append("src")
         except GithubException as e:
-            logger.error(f"Error checking test directories for {repo_name}: {str(e)}")
-            return False
+            logger.warning(f"Could not list root contents for {repo_name} to check for 'src' dir: {e}")
+            # Continue without checking src, or handle as an error if src is crucial
+
+        for path_prefix in paths_to_check:
+            try:
+                contents = repo.get_contents(path_prefix)
+                for content_item in contents:
+                    if content_item.type == "dir" and content_item.name.lower() in test_dirs:
+                        logger.debug(
+                            f"Found test directory '{content_item.name}' in '{path_prefix if path_prefix else 'root'}' for {repo_name}")
+                        return True
+            except GithubException as e:  # e.g., 404 if path_prefix (like 'src') doesn't exist
+                logger.debug(
+                    f"Error or path not found checking '{path_prefix}' for test directories in {repo_name}: {str(e)}")
+                continue  # Try next path_prefix or return False if all fail
+
+        logger.debug(f"No common test directories found for {repo_name} in checked paths.")
+        return False
 
     @retry_on_failure()
-    def check_test_files(self, repo_name: str) -> bool:
-        """Check for the existence of common unit test files in a given repository.
-        Args:
-            repo_name: The name of the repository (e.g., 'owner/repo').
-        Returns:
-            bool: True if test files exist, False otherwise.
-        """
+    def check_test_files(self, repo_name: str) -> bool:  # repo_name is "owner/repo"
+        """Check for common unit test files in a repository."""
         logger.info(f"Checking test files for repository: {repo_name}")
         repo = self.client.get_repo(repo_name)
-        test_patterns = ["test_*.py", "*_test.py"]
-        try:
-            # Check root directory
-            contents = repo.get_contents("")
-            if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in contents if content.type == "file"):
-                logger.debug(f"Found test files in root for {repo_name}")
-                return True
-            # Check src/ directory if it exists
-            src_dir = next((c for c in contents if c.name == "src" and c.type == "dir"), None)
-            if src_dir:
-                src_contents = repo.get_contents("src")
-                if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in src_contents if content.type == "file"):
-                    logger.debug(f"Found test files in src/ for {repo_name}")
-                    return True
-            # Check test directories if they exist
-            test_dirs = ["tests", "test"]
-            for test_dir_name in test_dirs:
-                test_dir = next((c for c in contents if c.name == test_dir_name and c.type == "dir"), None)
-                if test_dir:
-                    test_contents = repo.get_contents(test_dir_name)
-                    if any(content.name.endswith("_test.py") or content.name.startswith("test_") for content in test_contents if content.type == "file"):
-                        logger.debug(f"Found test files in {test_dir_name}/ for {repo_name}")
-                        return True
-            logger.debug(f"No test files found for {repo_name}")
-            return False
-        except GithubException as e:
-            logger.error(f"Error checking test files for {repo_name}: {str(e)}")
-            return False
+        # Common test file patterns (Python-centric, but can be expanded)
+        test_file_patterns = ["test_*.py", "*_test.py", "tests.py", "test.py"]
+        # Directories to search for test files
+        common_test_paths = ["", "tests", "test", "src", "src/tests",
+                             "src/test"]  # Check root, common test dirs, and under src
 
-    def check_test_config_files(self, repo_name: str) -> bool:
-        """Scan for configuration files related to testing in the root directory.
-        Args:
-            repo_name: The name of the repository (e.g., 'owner/repo').
-        Returns:
-            bool: True if test configuration files exist, False otherwise.
-        """
+        for path_prefix in common_test_paths:
+            try:
+                contents = repo.get_contents(path_prefix)
+                for content_item in contents:
+                    if content_item.type == "file":
+                        for pattern in test_file_patterns:
+                            # Basic matching for now, can use fnmatch if more complex patterns are needed
+                            if (pattern.startswith("*") and content_item.name.lower().endswith(pattern[1:])) or \
+                                    (pattern.endswith("*") and content_item.name.lower().startswith(pattern[:-1])) or \
+                                    (content_item.name.lower() == pattern):
+                                logger.debug(
+                                    f"Found test file '{content_item.name}' in '{path_prefix if path_prefix else 'root'}' for {repo_name}")
+                                return True
+            except GithubException as e:  # Path not found, or other issue
+                logger.debug(
+                    f"Error or path not found '{path_prefix}' while checking for test files in {repo_name}: {str(e)}")
+                continue
+
+        logger.debug(f"No common test files found for {repo_name} in checked paths.")
+        return False
+
+    @retry_on_failure()
+    def check_test_config_files(self, repo_name: str) -> bool:  # repo_name is "owner/repo"
+        """Scan for configuration files related to testing in the root directory."""
         logger.info(f"Checking test config files for repository: {repo_name}")
         repo = self.client.get_repo(repo_name)
-        config_files = ["pytest.ini", "tox.ini", "nose.cfg"]
+        config_files = ["pytest.ini", "tox.ini", "nose.cfg", ".coveragerc", "setup.cfg",
+                        "pyproject.toml"]  # setup.cfg/pyproject.toml can contain pytest/coverage config
         try:
-            contents = repo.get_contents("")
-            has_config = any(content.name in config_files and content.type == "file" for content in contents)
-            logger.debug(f"Test config files {'found' if has_config else 'not found'} for {repo_name}")
-            return has_config
+            contents = repo.get_contents("")  # Check only root for these usually
+            for content_item in contents:
+                if content_item.type == "file" and content_item.name.lower() in config_files:
+                    # For pyproject.toml or setup.cfg, could add a check for specific sections like [tool.pytest.ini_options]
+                    logger.debug(f"Test config file '{content_item.name}' found for {repo_name}")
+                    return True
+            logger.debug(f"No common test config files found in root for {repo_name}")
+            return False
         except GithubException as e:
             logger.error(f"Error checking test config files for {repo_name}: {str(e)}")
-            return False
+            return False  # False if error, as we couldn't confirm existence
 
-    def check_readme_for_test_frameworks(self, repo_name: str) -> bool:
-        """Search the repository README for mentions of testing frameworks.
-        Args:
-            repo_name: The name of the repository (e.g., 'owner/repo').
-        Returns:
-            bool: True if testing frameworks are mentioned, False otherwise.
-        """
+    @retry_on_failure()
+    def check_readme_for_test_frameworks(self, repo_name: str) -> bool:  # repo_name is "owner/repo"
+        """Search the repository README for mentions of testing frameworks."""
         logger.info(f"Checking README for test frameworks in repository: {repo_name}")
         repo = self.client.get_repo(repo_name)
         try:
             readme = repo.get_readme()
-            readme_content = readme.decoded_content.decode("utf-8").lower()
-            test_frameworks = ["pytest", "unittest", "nose"]
-            has_frameworks = any(framework in readme_content for framework in test_frameworks)
-            logger.debug(f"Test framework mentions {'found' if has_frameworks else 'not found'} in README for {repo_name}")
-            return has_frameworks
-        except GithubException as e:
-            logger.error(f"Error checking README for {repo_name}: {str(e)}")
-            return False 
+            readme_content = readme.decoded_content.decode("utf-8", errors="ignore").lower()  # Added errors='ignore'
+            test_frameworks = ["pytest", "unittest", "nose", "tox", "doctest", "behave", "lettuce",
+                               "robot framework"]  # Expanded list
+            if any(framework in readme_content for framework in test_frameworks):
+                logger.debug(f"Test framework mentions found in README for {repo_name}")
+                return True
+            logger.debug(f"No common test framework mentions found in README for {repo_name}")
+            return False
+        except GithubException as e:  # README might not exist (404) or other errors
+            if hasattr(e, 'status') and e.status == 404:
+                logger.debug(f"No README file found for {repo_name}.")
+            else:
+                logger.error(f"Error checking README for {repo_name}: {str(e)}")
+            return False
 
-    def check_cicd_configs(self, repo_name: str) -> bool:
-        """Detect CI/CD configurations related to testing in the repository.
-        Args:
-            repo_name: The name of the repository (e.g., 'owner/repo').
-        Returns:
-            bool: True if CI/CD configurations exist, False otherwise.
-        """
+    @retry_on_failure()
+    def check_cicd_configs(self, repo_name: str) -> bool:  # repo_name is "owner/repo"
+        """Detect CI/CD configurations related to testing in the repository."""
         logger.info(f"Checking CI/CD configs for repository: {repo_name}")
         repo = self.client.get_repo(repo_name)
-        cicd_files = [
-            ".github/workflows/*.yml",  # GitHub Actions
-            ".travis.yml",              # Travis CI
-            "Jenkinsfile",              # Jenkins
-            "teamcity.yml"              # TeamCity
-        ]
-        for file_pattern in cicd_files:
-            try:
-                contents = repo.get_contents(file_pattern)
-                if contents:
-                    logger.debug(f"Found CI/CD config {file_pattern} for {repo_name}")
-                    return True
-            except GithubException:
-                continue
-        logger.debug(f"No CI/CD configs found for {repo_name}")
-        return False 
+        # Patterns for CI/CD config files/directories
+        # GitHub Actions workflows are in .github/workflows/ and can be any .yml or .yaml file
+        # For others, it's usually a specific file name at the root.
 
-    def flag_missing_tests(self, repo_name: str) -> dict:
-        """Flag repositories where unit testing frameworks and configurations are absent.
-        Args:
-            repo_name: The name of the repository (e.g., 'owner/repo').
-        Returns:
-            dict: A dictionary indicating which test components are missing.
-        """
+        # Check for GitHub Actions workflow directory
+        try:
+            contents = repo.get_contents(".github/workflows")
+            if any(content.name.lower().endswith((".yml", ".yaml")) for content in contents if content.type == 'file'):
+                logger.debug(f"Found GitHub Actions workflow files in .github/workflows/ for {repo_name}")
+                return True
+        except GithubException as e:  # Path .github/workflows not found
+            logger.debug(f"No .github/workflows directory or error accessing it for {repo_name}: {str(e)}")
+            pass  # Continue to check other CI/CD files
+
+        # Check for other common CI/CD files at root
+        cicd_root_files = [".travis.yml", "Jenkinsfile", ".gitlab-ci.yml", "circle.yml", ".circleci/config.yml",
+                           "appveyor.yml", "azure-pipelines.yml", "bitbucket-pipelines.yml"]
+        try:
+            root_contents = repo.get_contents("")
+            for content_item in root_contents:
+                if content_item.type == "file" and content_item.name in cicd_root_files:
+                    logger.debug(f"Found CI/CD config file '{content_item.name}' in root for {repo_name}")
+                    return True
+                # Special case for .circleci/config.yml
+                if content_item.type == "dir" and content_item.name == ".circleci":
+                    try:
+                        circleci_contents = repo.get_contents(".circleci")
+                        if any(c.name == "config.yml" and c.type == "file" for c in circleci_contents):
+                            logger.debug(f"Found .circleci/config.yml for {repo_name}")
+                            return True
+                    except GithubException:
+                        pass  # couldn't read .circleci contents
+        except GithubException as e:
+            logger.error(f"Error checking root CI/CD config files for {repo_name}: {str(e)}")
+            # Fall through to return False if no CI/CD found or error on root listing
+
+        logger.debug(f"No common CI/CD configs found for {repo_name}")
+        return False
+
+    def flag_missing_tests(self, repo_name: str) -> dict:  # repo_name is "owner/repo"
+        """Flag repositories where unit testing frameworks and configurations are absent."""
         logger.info(f"Checking for missing test components in repository: {repo_name}")
+        # Note: These checks are independent. "Not having a test_directory" doesn't mean "no test files",
+        # as test files could be at root. The current logic reflects this.
         missing = {
             "test_directories": not self.check_test_directories(repo_name),
             "test_files": not self.check_test_files(repo_name),
@@ -385,51 +573,124 @@ class GitHubClient:
             "readme_mentions": not self.check_readme_for_test_frameworks(repo_name)
         }
         logger.debug(f"Missing test components for {repo_name}: {missing}")
-        return missing 
+        return missing
 
-    def store_missing_tests(self, repo_name: str, missing: dict) -> None:
+    def store_missing_tests(self, repo_name: str, missing: dict) -> None:  # repo_name is "owner/repo"
         """Store information about missing test components for a repository in the database.
-        Args:
-            repo_name: The name of the repository (e.g., 'owner/repo').
-            missing: A dictionary indicating which test components are missing, as returned by flag_missing_tests.
+        This method assumes the repository metadata ALREADY EXISTS from a prior call to store_repository_metadata.
+        It updates the 'missing' flags for an existing repository entry.
         """
-        logger.info(f"Storing missing test information for repository: {repo_name}")
+        logger.info(f"Attempting to store missing test information for repository: {repo_name}")
         session = self.Session()
-        # Extract just the repository name from owner/repo format
-        repo_name_only = repo_name.split('/')[-1]
-        repo = session.query(Repository).filter_by(name=repo_name_only).first()
-        if not repo:
-            # If the repository doesn't exist in the database, create a new record
-            metadata = self.get_repository_metadata(repo_name)
-            repo = Repository(**metadata)
-            session.add(repo)
-        # Update the record with missing test information
-        repo.missing_test_directories = missing.get("test_directories", False)
-        repo.missing_test_files = missing.get("test_files", False)
-        repo.missing_test_config_files = missing.get("test_config_files", False)
-        repo.missing_cicd_configs = missing.get("cicd_configs", False)
-        repo.missing_readme_mentions = missing.get("readme_mentions", False)
-        logger.debug(f"Updating repo {repo_name_only} with missing test info: {missing}")
-        session.flush()
-        session.commit()
-        session.close() 
+        try:
+            # Assuming repo_name is "owner/repo". We need to find it by URL or a unique full_name.
+            # The 'Repository' table's 'name' field is just the repo name, not unique across owners.
+            # Best to query by URL if that's unique.
 
-    def get_recently_scanned_repos(self, days: int = None) -> list:
-        """Get a list of repositories that have been scanned within the specified time period.
+            # First, try to get the repo object to construct the URL, or require URL to be passed
+            # This is a bit redundant if store_repository_metadata was just called.
+            # This function might be better merged or called directly by the main script after metadata is stored.
+
+            # Let's assume the repo's URL is the unique identifier here.
+            # We'd need the URL. If we only have "owner/repo", we can construct a potential URL.
+            # github_repo_obj = self.client.get_repo(repo_name) # API call
+            # repo_url = github_repo_obj.html_url
+
+            # Alternative: The calling script should manage this, passing the DB ID or unique URL.
+            # For now, if this method is called, we assume the repo *should* be in the DB.
+            # Let's assume the main script fetched metadata, got its URL, then calls this.
+            # However, the original code tries to get metadata IF NOT FOUND.
+
+            # Simplified: Assume the calling script ensures `repo_name` can be used to find an existing DB record.
+            # This part is tricky if `repo_name` is "owner/repo" and your DB `Repository.name` is just "repo".
+            # Let's refine to update based on URL, which should be unique.
+            # The `get_repository_metadata` would be the source of the URL.
+
+            # This method's original logic:
+            # repo_name_only = repo_name.split('/')[-1]
+            # repo_db_entry = session.query(Repository).filter_by(name=repo_name_only).first()
+            # This is problematic if multiple owners have repos with the same name.
+
+            # Safer approach: Use a more unique identifier if possible (like URL).
+            # If you must use repo_name ("owner/repo") and your DB stores only the simple name,
+            # you need to be careful.
+
+            # For the purpose of this function as "update flags for a repo known by its full name":
+            # It should ideally receive the database ID or a unique key like URL.
+            # If `repo_name` is "owner/repo", and you stored `url` (which includes owner/repo):
+
+            # Let's assume the calling function passes the URL that was stored.
+            # For now, I'll keep the original logic but log a warning about its potential ambiguity.
+
+            repo_name_only = repo_name.split('/')[-1]
+            logger.warning(
+                f"Querying repository in DB by simple name '{repo_name_only}' for update. This might be ambiguous if multiple owners have repos with this name. Consider using URL or DB ID for updates.")
+
+            repo_db_entry = session.query(Repository).filter(Repository.name == repo_name_only,
+                                                             Repository.url.like(f"%/{repo_name}")).first()
+
+            if not repo_db_entry:
+                logger.warning(
+                    f"Repository '{repo_name}' (name: {repo_name_only}) not found in database to update missing flags. Attempting to fetch and create.")
+                # This implies store_repository_metadata should have been called first.
+                # If we allow creation here, it duplicates store_repository_metadata's role.
+                # For now, let's assume it MUST exist.
+                # metadata = self.get_repository_metadata(repo_name) # API call
+                # repo_db_entry = Repository(**metadata) # This would create a new one
+                # session.add(repo_db_entry)
+                logger.error(
+                    f"Repository {repo_name} not found in DB. Flags cannot be updated. Ensure metadata is stored first.")
+                return  # Or raise an error
+
+            # Update the record with missing test information
+            repo_db_entry.missing_test_directories = missing.get("test_directories",
+                                                                 repo_db_entry.missing_test_directories)
+            repo_db_entry.missing_test_files = missing.get("test_files", repo_db_entry.missing_test_files)
+            repo_db_entry.missing_test_config_files = missing.get("test_config_files",
+                                                                  repo_db_entry.missing_test_config_files)
+            repo_db_entry.missing_cicd_configs = missing.get("cicd_configs", repo_db_entry.missing_cicd_configs)
+            repo_db_entry.missing_readme_mentions = missing.get("readme_mentions",
+                                                                repo_db_entry.missing_readme_mentions)
+            repo_db_entry.last_scanned_at = datetime.utcnow()  # Update scan time
+
+            logger.debug(f"Updating repo {repo_name} (DB name: {repo_db_entry.name}) with missing test info: {missing}")
+            session.commit()
+        except Exception as e:
+            logger.error(f"Error storing missing test information for {repo_name}: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def get_recently_scanned_repos(self, days: Optional[int] = None) -> list:
+        """Get a list of repository URLs that have been scanned within the specified time period.
         Args:
-            days: Number of days to look back. If None, returns all scanned repositories.
+            days: Number of days to look back. If None, returns all scanned repository URLs.
         Returns:
-            list: List of repository names that have been scanned.
+            list: List of repository URLs (e.g., 'https://github.com/owner/repo') that have been scanned.
+                  The calling script will need to match based on this.
         """
-        logger.info(f"Getting recently scanned repositories (days={days})")
+        logger.info(f"Getting recently scanned repository URLs (days={days})")
         session = self.Session()
-        query = session.query(Repository.name)
-        
-        if days is not None:
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
-            query = query.filter(Repository.last_scanned_at >= cutoff_date)
-            
-        repos = [repo[0] for repo in query.all()]
-        session.close()
-        logger.debug(f"Found {len(repos)} recently scanned repositories")
-        return repos 
+        try:
+            # Returns a list of URLs for the calling script to use for exclusion.
+            # Using URL as it's more unique than just 'name'.
+            query = session.query(Repository.url)
+
+            if days is not None:
+                # This is the behavior if `days` is specified by the calling script (e.g., untestables)
+                # It makes "recently scanned" mean scanned in the last X days.
+                cutoff_date = datetime.utcnow() - timedelta(days=days)
+                query = query.filter(Repository.last_scanned_at >= cutoff_date)
+            # If 'days' is None (as in the original log), all repo URLs from the DB are returned.
+            # The calling script then uses this list to skip processing.
+
+            repo_urls = [repo_url_tuple[0] for repo_url_tuple in query.all()]
+            logger.debug(f"Found {len(repo_urls)} repository URLs matching criteria (days={days}).")
+            return repo_urls
+        except Exception as e:
+            logger.error(f"Error getting recently scanned repos: {e}")
+            return []  # Return empty list on error
+        finally:
+            session.close()
+

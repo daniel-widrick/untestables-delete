@@ -43,7 +43,7 @@ def main(min_stars: int, max_stars: int, rescan_days: Optional[int] = None, forc
         logger.info("Searching GitHub for Python repositories...")
         click.echo("Searching GitHub for Python repositories...")
         repos = client.filter_repositories(
-            language="python",
+            language="Python",
             min_stars=min_stars,
             max_stars=max_stars
         )
