@@ -426,54 +426,64 @@ def test_check_test_directories_src_test(mock_github):
 def test_check_test_files_root(mock_github):
     """Test detection of test files at root."""
     mock_repo = MagicMock()
-    mock_test_file = MagicMock(name="test_example.py", type="file")
+    # mock_test_file = MagicMock(name="test_example.py", type="file") # This is how it should be
     
-    # Client checks: "", "tests", "test", "src", "src/tests", "src/test"
-    # We want it to find the file in the root "" path.
     def get_contents_side_effect_root(path):
-        if path == "": return [MagicMock(name="test_example.py", type="file")]
-        else: raise GithubException(status=404, data={"message": "Not Found"}, headers=None)
+        if path == "":
+            file_mock = MagicMock()
+            file_mock.name = "test_example.py" # Explicitly set the string name
+            file_mock.type = "file"
+            return [file_mock]
+        else: 
+            raise GithubException(status=404, data={"message": "Not Found"}, headers=None)
     
     mock_repo.get_contents.side_effect = get_contents_side_effect_root
     mock_github.return_value.get_repo.return_value = mock_repo
-    client = GitHubClient(token="test_token")
-    assert client.check_test_files("owner/repo") is True
+    client = GitHubClient(token="test_token") #
+    assert client.check_test_files("owner/repo") is True #
+
 
 def test_check_test_files_src(mock_github):
     """Test detection of test files under src/."""
     mock_repo = MagicMock()
-    mock_test_file_in_src = MagicMock(name="test_app_in_src.py", type="file")
-    mock_src_dir_item = MagicMock(name="src", type="dir") # Item representing 'src' dir at root
-
+    
     def get_contents_side_effect_src(path):
-        mock_test_file_in_src = MagicMock(name="test_app_in_src.py", type="file")
-        mock_src_dir_item = MagicMock(name="src", type="dir")
-        if path == "": return [mock_src_dir_item]
-        elif path == "src": return [mock_test_file_in_src]
-        else: raise GithubException(status=404, data={"message": "Not Found"}, headers=None)
+        mock_src_dir_item = MagicMock(name="src", type="dir") #
+        if path == "":
+            return [mock_src_dir_item] #
+        elif path == "src":
+            file_mock_in_src = MagicMock()
+            file_mock_in_src.name = "test_app_in_src.py" # String name
+            file_mock_in_src.type = "file"
+            return [file_mock_in_src]
+        else: 
+            raise GithubException(status=404, data={"message": "Not Found"}, headers=None)
             
     mock_repo.get_contents.side_effect = get_contents_side_effect_src
     mock_github.return_value.get_repo.return_value = mock_repo
-    client = GitHubClient(token="test_token")
-    assert client.check_test_files("owner/repo") is True
+    client = GitHubClient(token="test_token") #
+    assert client.check_test_files("owner/repo") is True #
 
 def test_check_test_files_test_dir(mock_github):
     """Test detection of test files under a 'tests/' directory."""
     mock_repo = MagicMock()
-    mock_test_file_in_tests_dir = MagicMock(name="test_module.py", type="file")
-    mock_tests_dir_item = MagicMock(name="tests", type="dir") # Item representing 'tests' dir at root
 
     def get_contents_side_effect_test_dir(path):
-        mock_test_file_in_tests_dir = MagicMock(name="test_module.py", type="file")
-        mock_tests_dir_item = MagicMock(name="tests", type="dir")
-        if path == "": return [mock_tests_dir_item]
-        elif path == "tests": return [mock_test_file_in_tests_dir]
-        else: raise GithubException(status=404, data={"message": "Not Found"}, headers=None)
+        mock_tests_dir_item = MagicMock(name="tests", type="dir") #
+        if path == "":
+            return [mock_tests_dir_item] #
+        elif path == "tests":
+            file_mock_in_tests = MagicMock()
+            file_mock_in_tests.name = "test_module.py" # String name
+            file_mock_in_tests.type = "file"
+            return [file_mock_in_tests]
+        else: 
+            raise GithubException(status=404, data={"message": "Not Found"}, headers=None)
             
     mock_repo.get_contents.side_effect = get_contents_side_effect_test_dir
     mock_github.return_value.get_repo.return_value = mock_repo
-    client = GitHubClient(token="test_token")
-    assert client.check_test_files("owner/repo") is True
+    client = GitHubClient(token="test_token") #
+    assert client.check_test_files("owner/repo") is True #
 
 def test_check_test_config_files_exists(mock_github):
     """Test detection of test configuration files at root."""
@@ -549,13 +559,21 @@ def test_flag_missing_tests_all_present(mock_github):
 
     # --- Mock items for a repo with all test components PRESENT --- 
     # For check_test_directories: a 'tests' dir
-    mock_tests_dir = MagicMock(name="tests", type="dir")
+    mock_tests_dir = MagicMock()
+    mock_tests_dir.name = "tests"
+    mock_tests_dir.type = "dir"
     # For check_test_files: a test file within 'tests' dir
-    mock_test_py_file = MagicMock(name="test_app.py", type="file")
+    mock_test_py_file = MagicMock()
+    mock_test_py_file.name = "test_app.py"
+    mock_test_py_file.type = "file"
     # For check_test_config_files: a pytest.ini at root
-    mock_pytest_ini_file = MagicMock(name="pytest.ini", type="file")
+    mock_pytest_ini_file = MagicMock()
+    mock_pytest_ini_file.name = "pytest.ini"
+    mock_pytest_ini_file.type = "file"
     # For check_cicd_configs: a GitHub Actions yml file
-    mock_gh_actions_workflow_file = MagicMock(name="ci.yml", type="file") 
+    mock_gh_actions_workflow_file = MagicMock()
+    mock_gh_actions_workflow_file.name = "ci.yml"
+    mock_gh_actions_workflow_file.type = "file"
     # For check_readme_for_test_frameworks: README content
     mock_readme = MagicMock()
     mock_readme.decoded_content = b"This project uses pytest and has CI with GitHub Actions."

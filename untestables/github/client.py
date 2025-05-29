@@ -1,6 +1,7 @@
 """GitHub API client implementation."""
 import os
 import time
+import fnmatch
 from functools import wraps
 from typing import Optional, Callable, Any
 from github import Github
@@ -402,30 +403,24 @@ class GitHubClient:
         """Check for common unit test files in a repository."""
         logger.info(f"Checking test files for repository: {repo_name}")
         repo = self.client.get_repo(repo_name)
-        # Common test file patterns (Python-centric, but can be expanded)
+        # Patterns for fnmatch
         test_file_patterns = ["test_*.py", "*_test.py", "tests.py", "test.py"]
-        # Directories to search for test files
-        common_test_paths = ["", "tests", "test", "src", "src/tests",
-                             "src/test"]  # Check root, common test dirs, and under src
+        common_test_paths = ["", "tests", "test", "src", "src/tests", "src/test"]
 
         for path_prefix in common_test_paths:
             try:
                 contents = repo.get_contents(path_prefix)
                 for content_item in contents:
                     if content_item.type == "file":
+                        file_name_lower = content_item.name.lower()
                         for pattern in test_file_patterns:
-                            # Basic matching for now, can use fnmatch if more complex patterns are needed
-                            if (pattern.startswith("*") and content_item.name.lower().endswith(pattern[1:])) or \
-                                    (pattern.endswith("*") and content_item.name.lower().startswith(pattern[:-1])) or \
-                                    (content_item.name.lower() == pattern):
-                                logger.debug(
-                                    f"Found test file '{content_item.name}' in '{path_prefix if path_prefix else 'root'}' for {repo_name}")
+                            if fnmatch.fnmatchcase(file_name_lower, pattern): # Use fnmatchcase for case-sensitive matching on case-insensitive filesystems if needed, or fnmatch
+                                logger.debug(f"Found test file '{content_item.name}' in '{path_prefix or 'root'}' matching pattern '{pattern}' for {repo_name}")
                                 return True
-            except GithubException as e:  # Path not found, or other issue
-                logger.debug(
-                    f"Error or path not found '{path_prefix}' while checking for test files in {repo_name}: {str(e)}")
+            except GithubException as e:
+                logger.debug(f"Error or path not found '{path_prefix}' while checking for test files in {repo_name}: {str(e)}")
                 continue
-
+        
         logger.debug(f"No common test files found for {repo_name} in checked paths.")
         return False
 
