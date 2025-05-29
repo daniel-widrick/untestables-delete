@@ -1,86 +1,115 @@
 """
-Logging functionality
+Generic Logging Functionality
 
-This module provides functions for setting up logging with consistent formatting
-and support for both console and file output.
+This module provides a class for setting up and accessing a configured logger
+with consistent formatting and support for both console and file output.
 """
 
 import logging
 import sys
-from typing import Optional
+from typing import Optional, Union # Union for log_level
 
-# Global variable to hold the specifically configured application logger instance.
-# Using a more descriptive name for the logger itself, e.g., "untestables_app_logger".
-_app_logger: Optional[logging.Logger] = None
-_APP_LOGGER_NAME = "untestables_app" # Choose a fixed name for your application logger
-
-def setup_logging(log_file: Optional[str] = None) -> None:
+class LoggingManager: # Renamed from GenericLogger
     """
-    Initialize or reconfigure the shared application logger.
-    This function should be called once at the application's start.
+    A manager class that can be instantiated to configure and retrieve loggers.
     """
-    global _app_logger
 
-    if _app_logger is None:
-        _app_logger = logging.getLogger(_APP_LOGGER_NAME)
-        _app_logger.setLevel(logging.INFO)
-    else:
-        # If called again, clear existing handlers to avoid duplication
-        # This might happen if setup_logging is inadvertently called multiple times,
-        # though the goal is to call it once from cli.py at the very start.
-        for handler in _app_logger.handlers[:]:
-            _app_logger.removeHandler(handler)
+    DEFAULT_LOG_FORMAT = "%(asctime)s | %(name)s | %(levelname)8s | %(message)s"
+    DEFAULT_LOG_LEVEL = logging.INFO
 
-    log_format = "%(asctime)s | %(levelname)8s | %(message)s"
-    formatter = logging.Formatter(log_format)
+    def __init__(self,
+                 logger_name: str,
+                 log_level: Union[int, str] = DEFAULT_LOG_LEVEL,
+                 log_format: str = DEFAULT_LOG_FORMAT,
+                 log_file: Optional[str] = None,
+                 console_output: bool = True,
+                 propagate: bool = False):
+        """
+        Initializes and configures a specific logger instance.
 
-    # Create and add console handler
-    console_handler = logging.StreamHandler(stream=sys.stdout) # Explicitly stdout
-    console_handler.setFormatter(formatter)
-    _app_logger.addHandler(console_handler)
+        Args:
+            logger_name (str): The name for the logger to be configured.
+            log_level (Union[int, str], optional): The logging level.
+            log_format (str, optional): The format string for log messages.
+            log_file (Optional[str], optional): Path to a file for log output.
+            console_output (bool, optional): Whether to output logs to the console.
+            propagate (bool, optional): Whether messages from the configured logger
+                                     should be passed to ancestor loggers.
+        """
+        self.logger_name = logger_name # Name of the logger this instance configures
+        self.log_level = log_level
+        self.log_format_str = log_format
+        self.log_file = log_file
+        self.console_output = console_output
+        self.propagate = propagate
 
-    # Create and add file handler if log_file is provided
-    if log_file:
-        try:
-            file_handler = logging.FileHandler(log_file, mode='a')
-            file_handler.setFormatter(formatter)
-            _app_logger.addHandler(file_handler)
-            # This print is outside of the logging system, so it's fine.
-            # It gives immediate feedback that file logging is attempted.
-            print(f"Logging to file: {log_file}")
-        except Exception as e:
-            # Also print this to stderr directly, as logger might not be fully up.
-            print(f"Warning: Could not set up logging to file {log_file}: {e}", file=sys.stderr)
+        self._configured_logger = logging.getLogger(self.logger_name)
+        self._configured_logger.setLevel(self.log_level)
+        self._configured_logger.propagate = self.propagate
 
-    # Important: Prevent messages from this logger from propagating to the root logger.
-    # The root logger might have default handlers (e.g., from a previous basicConfig call
-    # by another library, or Python's default).
-    _app_logger.propagate = False
+        # Clear existing handlers to prevent duplication if this logger name was used before
+        # and is being reconfigured by a new LoggingManager instance.
+        if self._configured_logger.hasHandlers():
+            self._configured_logger.handlers.clear()
 
-    # DO NOT call logging.basicConfig(). We are manually configuring handlers
-    # for our specific application logger (_app_logger).
-    # logging.basicConfig() configures the root logger and can add handlers
-    # that would lead to duplicate messages if _app_logger also propagates.
+        self._formatter = logging.Formatter(self.log_format_str)
+        self._configure_handlers()
 
-def get_logger() -> logging.Logger:
-    """
-    Get the configured shared application logger instance.
+    def _configure_handlers(self) -> None:
+        """
+        Configures and adds console and/or file handlers to the logger
+        managed by this LoggingManager instance.
+        """
+        if self.console_output:
+            console_handler = logging.StreamHandler(stream=sys.stdout)
+            console_handler.setFormatter(self._formatter)
+            self._configured_logger.addHandler(console_handler)
 
-    Returns
-    -------
-    logging.Logger
-        The configured logger instance.
+        if self.log_file:
+            try:
+                file_handler = logging.FileHandler(self.log_file, mode='a')
+                file_handler.setFormatter(self._formatter)
+                self._configured_logger.addHandler(file_handler)
+                # This print remains for now, as it was in previous versions.
+                # Consider routing this through the logger itself if appropriate.
+                print(f"Logger '{self.logger_name}': Logging to file: {self.log_file}")
+            except Exception as e:
+                print(f"Warning: Logger '{self.logger_name}': Could not set up logging to file {self.log_file}: {e}", file=sys.stderr)
 
-    Raises
-    ------
-    RuntimeError
-        If setup_logging has not been called before this function.
-    """
-    global _app_logger
-    if _app_logger is None:
-        # This state indicates an issue in the application's startup sequence.
-        # setup_logging() in cli.py should always be called first.
-        raise RuntimeError(
-            "Logger not initialized. Call setup_logging() from the main application entry point first."
-        )
-    return _app_logger
+    def get_configured_logger(self) -> logging.Logger:
+        """
+        Returns the logger instance that this LoggingManager instance configured.
+        """
+        return self._configured_logger
+
+    @staticmethod
+    def get_logger(name: str) -> logging.Logger:
+        """
+        Retrieves a logger instance by its name.
+
+        This static method allows other parts of the application to obtain logger
+        instances without directly importing or using the standard `logging` module.
+        It's expected that a primary logger (e.g., 'app') has been configured
+        by an instance of LoggingManager, and child loggers (e.g., 'app.child')
+        obtained via this method will propagate their messages to the primary logger's handlers.
+
+        Args:
+            name (str): The name of the logger to retrieve (e.g., "app.module").
+
+        Returns:
+            logging.Logger: The logger instance.
+        """
+        return logging.getLogger(name)
+
+    def add_handler(self, handler: logging.Handler) -> None:
+        """
+        Adds a custom handler to the logger configured by this manager.
+        The handler should have its formatter set if required.
+        """
+        self._configured_logger.addHandler(handler)
+
+    def remove_handler(self, handler: logging.Handler) -> None:
+        """
+        Removes a specific handler from the logger configured by this manager.
+        """
+        self._configured_logger.removeHandler(handler)

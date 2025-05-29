@@ -2,8 +2,7 @@ import click
 import os
 from datetime import datetime
 from typing import Optional
-# Import common.logging first to set up logging
-from common.logging import setup_logging, get_logger
+from common.logging import LoggingManager
 
 # --- Setup logging early ---
 # Ensure the logs directory exists
@@ -11,16 +10,23 @@ LOGS_DIR = 'logs'
 os.makedirs(LOGS_DIR, exist_ok=True)
 # Generate a timestamped log file name
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-log_file = os.path.join(LOGS_DIR, f'untestables_{timestamp}.log')
-# Configure logging
-setup_logging(log_file)
+log_file_path = os.path.join(LOGS_DIR, f'untestables_{timestamp}.log')
+
+# Configure the main 'app' logger which will have the file and console handlers.
+# This LoggingManager instance configures the 'app' logger.
+app_logger_manager = LoggingManager(
+    logger_name='app',  # Main logger for the application
+    log_file=log_file_path,
+    console_output=True,
+    propagate=False  # The 'app' logger itself should not propagate to root
+)
+
+# Get a specific logger for this cli.py module, via LoggingManager
+logger = LoggingManager.get_logger('app.cli')
 # --- Logging is now set up ---
 
-# Now import GitHubClient, which calls get_logger() at its module level
+# Now import GitHubClient. Its logger will be 'app.github_client' (see client.py changes)
 from untestables.github.client import GitHubClient
-
-# Get a logger instance for this cli.py module
-logger = get_logger()
 
 @click.command()
 @click.option('--min-stars', type=int, default=5, help='Minimum number of stars')

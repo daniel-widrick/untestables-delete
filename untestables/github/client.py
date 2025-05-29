@@ -10,12 +10,11 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from common.logging import setup_logging, get_logger  # Assuming this path is correct relative to where client.py is run
+from common.logging import LoggingManager
 from datetime import datetime, timedelta
 
-# Set up logging for this module
-# setup_logging() # Removed: Logging should be configured by the application entry point (e.g., cli.py)
-logger = get_logger()
+# Set up logging for this module via LoggingManager
+logger = LoggingManager.get_logger('app.github_client')
 
 
 class RateLimitExceeded(Exception):
