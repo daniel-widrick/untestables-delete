@@ -15,6 +15,12 @@ logger = LoggingManager.get_logger(__name__)
 class AnalyzerService:
     def __init__(self, db_url: str = None): # db_url might be needed for GitHubClient
         self.config = get_config()
+        logger.info("AnalyzerService initialized with configuration:")
+        logger.info(f"  Absolute Min Stars: {self.config.abs_min_stars}")
+        logger.info(f"  Absolute Max Stars: {self.config.abs_max_stars}")
+        logger.info(f"  Default Chunk Size: {self.config.default_chunk_size}")
+        logger.info(f"  Scanner Command: {self.config.scanner_command}")
+
         # We need a way to get processed star counts.
         # This might involve instantiating GitHubClient or having a dedicated DB access class.
         # For now, let's assume GitHubClient provides this.
@@ -123,6 +129,7 @@ class AnalyzerService:
 
     def execute_scanner_command(self, command: str) -> int:
         """
+        DEPRECATED: Prefer execute_scanner_command_with_output for richer results.
         Executes the given scanner command as a subprocess and waits for completion.
 
         Args:
@@ -131,29 +138,9 @@ class AnalyzerService:
         Returns:
             int: The exit code of the scanner process.
         """
-        logger.info(f"Executing scanner command: {command}")
-        try:
-            # Using shlex.split for better handling of commands with spaces/quotes if needed,
-            # though for the current simple command structure, direct string might be fine.
-            # For robustness with more complex base_commands in config, shlex is safer.
-            import shlex
-            process = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            stdout, stderr = process.communicate() # Wait for completion
-            exit_code = process.returncode
-
-            if stdout:
-                logger.info(f"Scanner stdout:\n{stdout.decode().strip()}")
-            if stderr:
-                logger.warning(f"Scanner stderr:\n{stderr.decode().strip()}")
-            
-            logger.info(f"Scanner command finished with exit code: {exit_code}")
-            return exit_code
-        except FileNotFoundError:
-            logger.error(f"Error: The scanner command '{command.split()[0]}' was not found. Ensure it is installed and in PATH.")
-            return -1 # Or raise an specific exception
-        except Exception as e:
-            logger.error(f"An error occurred while executing scanner command '{command}': {e}")
-            return -1 # Or raise
+        logger.warning("DEPRECATED: execute_scanner_command is called. Use execute_scanner_command_with_output instead.")
+        exit_code, _, _ = self.execute_scanner_command_with_output(command)
+        return exit_code
 
     def handle_scan_result(self, exit_code: int, stdout: str, stderr: str, scanned_range: Tuple[int, int]):
         """
@@ -182,6 +169,77 @@ class AnalyzerService:
         # Placeholder for logging related to partial completion signals
         logger.debug("Current partial completion signal detection is not implemented beyond exit code analysis.")
         # The actual adjustment of gap understanding would happen elsewhere, based on this method's findings.
+
+    def run_scanner_orchestration_cycle(self) -> bool:
+        """
+        Runs one full cycle of the scanner orchestration:
+        1. Selects a gap.
+        2. If gap found, constructs and executes scanner command, then handles result.
+        3. If no gap, logs and indicates completion for this cycle.
+
+        Returns:
+            bool: True if a scan was attempted (gap was found), False if no gaps were found.
+        """
+        logger.info("Starting new scanner orchestration cycle...")
+        
+        selected_gap = self.select_next_gap()
+        
+        if not selected_gap:
+            logger.info("No gaps available to scan in this cycle.")
+            # This addresses part of "Handle 'No Gaps' Scenario"
+            return False # No scan attempted
+            
+        min_stars, max_stars = selected_gap
+        logger.info(f"Processing selected gap: {min_stars}-{max_stars}")
+        
+        command_to_run = self.construct_scanner_command(min_stars, max_stars)
+        
+        # Here, one might add a check for "scanner busy" if that logic was part of this service.
+        # For now, proceeding directly to execution.
+        
+        # execute_scanner_command already logs stdout/stderr, so we just need exit_code here
+        # for handle_scan_result. We need to capture stdout/stderr to pass it though.
+        # Modifying execute_scanner_command to return a more structured result might be better in the long run.
+        # For now, let's re-fetch stdout/stderr if needed by handle_scan_result, 
+        # or adjust execute_scanner_command to return them.
+        # The current execute_scanner_command returns only exit_code.
+        # For handle_scan_result, we need stdout & stderr strings.
+        # Let's make execute_scanner_command return a tuple: (exit_code, stdout_str, stderr_str)
+
+        exit_code, stdout_str, stderr_str = self.execute_scanner_command_with_output(command_to_run)
+
+        self.handle_scan_result(exit_code, stdout_str, stderr_str, selected_gap)
+        
+        logger.info("Scanner orchestration cycle finished.")
+        return True # Scan was attempted
+
+    # To support run_scanner_orchestration_cycle, we need execute_scanner_command 
+    # to return stdout/stderr strings. Let's create a new version or modify existing.
+    # For clarity, let's make a new one for now that returns output.
+    def execute_scanner_command_with_output(self, command: str) -> Tuple[int, str, str]:
+        """
+        Executes the given scanner command, waits, and returns exit code, stdout, and stderr.
+        """
+        logger.info(f"Executing scanner command for orchestration: {command}")
+        try:
+            import shlex
+            process = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout_str, stderr_str = process.communicate() # Wait for completion
+            exit_code = process.returncode
+
+            if stdout_str.strip():
+                logger.info(f"Scanner stdout:\n{stdout_str.strip()}")
+            if stderr_str.strip():
+                logger.warning(f"Scanner stderr:\n{stderr_str.strip()}")
+            
+            logger.info(f"Scanner command finished with exit code: {exit_code}")
+            return exit_code, stdout_str, stderr_str
+        except FileNotFoundError:
+            logger.error(f"Error: The scanner command '{command.split()[0]}' was not found. Ensure it is installed and in PATH.")
+            return -1, "", f"Command not found: {command.split()[0]}"
+        except Exception as e:
+            logger.error(f"An error occurred while executing scanner command '{command}': {e}")
+            return -1, "", str(e)
 
 
 if __name__ == '__main__':
@@ -395,3 +453,53 @@ if __name__ == '__main__':
     # To test partial completion logging, we'd need to simulate that signal
     # For now, it just logs the debug message about non-implementation
     analyzer.handle_scan_result(2, "PARTIAL_COMPLETION_SIGNAL", "", test_range) 
+
+    # Test run_scanner_orchestration_cycle
+    print("\nTesting run_scanner_orchestration_cycle...")
+
+    # Scenario 1: Gaps are available
+    analyzer.config.abs_min_stars = 0
+    analyzer.config.abs_max_stars = 100
+    analyzer.config.default_chunk_size = 50
+    class MockOrchestrationClientWithGaps:
+        def get_processed_star_counts(self):
+            return [10, 20] # Gaps: 0-9, 21-100 -> chunks (0,9), (21,70), (71,100)
+    analyzer.github_client = MockOrchestrationClientWithGaps()
+    analyzer.config.scanner_command = "echo" # Use a safe command for testing execution
+    if sys.platform == "win32":
+        analyzer.config.scanner_command = 'python -c "import sys; sys.stdout.write(\'Mock scan output\'); sys.exit(0)"'
+
+    logger.info("Testing orchestration cycle WITH gaps...")
+    scan_attempted = analyzer.run_scanner_orchestration_cycle()
+    print(f"Scan attempted (with gaps): {scan_attempted}")
+    assert scan_attempted is True
+
+    # Scenario 2: No gaps available
+    class MockOrchestrationClientNoGaps:
+        def get_processed_star_counts(self):
+            return list(range(0, 101)) # All processed from 0-100
+    analyzer.github_client = MockOrchestrationClientNoGaps()
+    logger.info("Testing orchestration cycle with NO gaps...")
+    scan_attempted_no_gaps = analyzer.run_scanner_orchestration_cycle()
+    print(f"Scan attempted (no gaps): {scan_attempted_no_gaps}")
+    assert scan_attempted_no_gaps is False
+
+    # To truly test the loop and sleep, the __main__ would need to change:
+    # print("\nSimulating continuous run (2 cycles with 1s sleep, if gaps exist)...")
+    # for i in range(2):
+    #     logger.info(f"--- Orchestration Iteration {i+1} ---")
+    #     # Re-setup client for consistent gap availability if needed for multiple iterations
+    #     analyzer.github_client = MockOrchestrationClientWithGaps() 
+    #     if sys.platform == "win32":
+    #         analyzer.config.scanner_command = 'python -c "import sys; sys.stdout.write(\'Mock scan output\'); sys.exit(0)"'
+    #     else:
+    #        analyzer.config.scanner_command = "echo" 
+
+    #     attempted = analyzer.run_scanner_orchestration_cycle()
+    #     if not attempted:
+    #         logger.info("No more gaps, stopping simulation.")
+    #         break
+    #     if i < 1: # Don't sleep after the last iteration
+    #         logger.info("Simulating sleep for 1 second...")
+    #         import time
+    #         time.sleep(1) 
