@@ -1,16 +1,21 @@
 """
 Analyzer service to identify star ranges that need scanning.
 """
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 import subprocess # Add for subprocess execution
+import shlex # Added shlex import here as it's used directly
+import re # For parsing APILimitError from stderr
+from datetime import datetime, timezone # For handling reset times
 
 # Replace standard logging with LoggingManager
 from common.logging import LoggingManager
 from untestables.config import get_config
-from untestables.github.client import GitHubClient # Assuming GitHubClient is the way to access get_processed_star_counts
+from untestables.github.client import GitHubClient, APILimitError # Import new error and client for proactive check
 
 logger = LoggingManager.get_logger(__name__)
 
+# Special code to indicate scanner hit API limit
+SCANNER_APILIMIT_EXIT_CODE = 99
 
 class AnalyzerService:
     def __init__(self, db_url: str = None): # db_url might be needed for GitHubClient
@@ -29,6 +34,7 @@ class AnalyzerService:
         # If GITHUB_TOKEN is strictly for API calls not related to get_processed_star_counts,
         # we might need to adjust GitHubClient or provide a dummy token.
         self.github_client = GitHubClient(db_url=db_url) # This will raise ValueError if GITHUB_TOKEN is not set
+        self.api_limit_reset_time: Optional[datetime] = None # Store when API limit will reset
 
     def get_processed_star_ranges(self) -> List[int]:
         """
@@ -136,10 +142,19 @@ class AnalyzerService:
             command (str): The full command string to execute.
 
         Returns:
-            int: The exit code of the scanner process.
+            int: The exit code of the scanner process (or SCANNER_APILIMIT_EXIT_CODE if that was detected).
         """
         logger.warning("DEPRECATED: execute_scanner_command is called. Use execute_scanner_command_with_output instead.")
-        exit_code, _, _ = self.execute_scanner_command_with_output(command)
+        exit_code, _, stderr_str = self.execute_scanner_command_with_output(command)
+        
+        # Check stderr for APILimitError signal from scanner
+        # Example signal: "ANALYZER_ERROR:APILimitError:1678886400"
+        match = re.search(r"ANALYZER_ERROR:APILimitError:(\d+)", stderr_str)
+        if match:
+            reset_timestamp = int(match.group(1))
+            self.api_limit_reset_time = datetime.fromtimestamp(reset_timestamp, tz=timezone.utc)
+            logger.warning(f"Scanner reported APILimitError. API reset time: {self.api_limit_reset_time}")
+            return SCANNER_APILIMIT_EXIT_CODE
         return exit_code
 
     def handle_scan_result(self, exit_code: int, stdout: str, stderr: str, scanned_range: Tuple[int, int]):
@@ -158,11 +173,8 @@ class AnalyzerService:
         if exit_code == 0:
             logger.info(f"Scan of range {scanned_range} completed successfully.")
             # In the future, even with exit code 0, stdout/stderr might indicate partial completion.
-        # TODO: Define specific exit codes or stdout/stderr messages for partial completion.
-        # Example: if exit_code == 2 or "PARTIAL_COMPLETION" in stdout:
-        #     logger.warning(f"Scanner indicated partial completion for range {scanned_range}.")
-        #     # Here, logic would be needed to determine how much was processed and adjust the gap.
-        #     # For now, we assume any non-zero exit code means the whole chunk should be retried or marked as failed.
+        elif exit_code == SCANNER_APILIMIT_EXIT_CODE:
+            logger.warning(f"Scan of range {scanned_range} was preempted by API rate limit reported by scanner. Will wait until {self.api_limit_reset_time}.")
         elif exit_code !=0:
              logger.warning(f"Scan of range {scanned_range} failed or reported errors. Exit code: {exit_code}")
 
@@ -173,64 +185,91 @@ class AnalyzerService:
     def run_scanner_orchestration_cycle(self) -> bool:
         """
         Runs one full cycle of the scanner orchestration:
-        1. Selects a gap.
-        2. If gap found, constructs and executes scanner command, then handles result.
-        3. If no gap, logs and indicates completion for this cycle.
-
-        Returns:
-            bool: True if a scan was attempted (gap was found), False if no gaps were found.
+        Checks API limits, selects gap, executes scanner, handles result.
+        Returns True if a scan was attempted, False if no gaps or if API limit active.
         """
         logger.info("Starting new scanner orchestration cycle...")
-        
+
+        # Proactive API limit check
+        if self.api_limit_reset_time and datetime.now(timezone.utc) < self.api_limit_reset_time:
+            logger.info(f"Proactive check: API rate limit is active. Waiting until {self.api_limit_reset_time}. Skipping cycle.")
+            return False # Indicate cycle skipped due to API limit
+        else:
+            self.api_limit_reset_time = None # Clear previous limit if time has passed
+
+        try:
+            # It's better to check the actual API if we are not sure about self.api_limit_reset_time
+            # This check is more for when the scanner itself reports a limit.
+            # A proactive check against current limits from GitHubClient could also be added here.
+            limits = self.github_client.get_rate_limit_info()
+            # Let's be conservative: check search API, as scanner (main CLI) uses it.
+            search_limits = limits.get('search', {})
+            if search_limits.get('remaining', 1) == 0: # If remaining is 0
+                reset_dt = search_limits.get('reset_time_datetime')
+                if reset_dt and datetime.now(timezone.utc) < reset_dt:
+                    self.api_limit_reset_time = reset_dt
+                    logger.warning(f"Proactive check: GitHub search API rate limit is 0. Reset at {reset_dt}. Skipping cycle.")
+                    return False
+        except Exception as e:
+            logger.error(f"Failed to check GitHub rate limits before scan: {e}", exc_info=True)
+            # Decide: proceed with scan or not? For now, let's proceed cautiously or return False.
+            # Returning False to be safe, will cause a wait in the main loop.
+            return False
+
         selected_gap = self.select_next_gap()
         
         if not selected_gap:
             logger.info("No gaps available to scan in this cycle.")
-            # This addresses part of "Handle 'No Gaps' Scenario"
-            return False # No scan attempted
+            return False 
             
         min_stars, max_stars = selected_gap
         logger.info(f"Processing selected gap: {min_stars}-{max_stars}")
         
         command_to_run = self.construct_scanner_command(min_stars, max_stars)
         
-        # Here, one might add a check for "scanner busy" if that logic was part of this service.
-        # For now, proceeding directly to execution.
-        
-        # execute_scanner_command already logs stdout/stderr, so we just need exit_code here
-        # for handle_scan_result. We need to capture stdout/stderr to pass it though.
-        # Modifying execute_scanner_command to return a more structured result might be better in the long run.
-        # For now, let's re-fetch stdout/stderr if needed by handle_scan_result, 
-        # or adjust execute_scanner_command to return them.
-        # The current execute_scanner_command returns only exit_code.
-        # For handle_scan_result, we need stdout & stderr strings.
-        # Let's make execute_scanner_command return a tuple: (exit_code, stdout_str, stderr_str)
-
         exit_code, stdout_str, stderr_str = self.execute_scanner_command_with_output(command_to_run)
+
+        # Check stderr for APILimitError signal from scanner, if not already handled by execute_scanner_command
+        # (Note: the deprecated execute_scanner_command attempts this, but for direct calls to _with_output, we check here)
+        if exit_code != SCANNER_APILIMIT_EXIT_CODE: # Avoid double parsing if already handled by deprecated wrapper
+            match = re.search(r"ANALYZER_ERROR:APILimitError:(\d+)", stderr_str)
+            if match:
+                reset_timestamp = int(match.group(1))
+                self.api_limit_reset_time = datetime.fromtimestamp(reset_timestamp, tz=timezone.utc)
+                logger.warning(f"Scanner reported APILimitError for range {selected_gap}. API reset time: {self.api_limit_reset_time}")
+                # Override exit_code for handle_scan_result
+                exit_code = SCANNER_APILIMIT_EXIT_CODE 
 
         self.handle_scan_result(exit_code, stdout_str, stderr_str, selected_gap)
         
-        logger.info("Scanner orchestration cycle finished.")
-        return True # Scan was attempted
+        if exit_code == SCANNER_APILIMIT_EXIT_CODE:
+            logger.info("Scanner orchestration cycle interrupted by API limit.")
+            return False # Scan was attempted but hit limit, main loop should wait
 
-    # To support run_scanner_orchestration_cycle, we need execute_scanner_command 
-    # to return stdout/stderr strings. Let's create a new version or modify existing.
-    # For clarity, let's make a new one for now that returns output.
+        logger.info("Scanner orchestration cycle finished.")
+        return True 
+
     def execute_scanner_command_with_output(self, command: str) -> Tuple[int, str, str]:
         """
         Executes the given scanner command, waits, and returns exit code, stdout, and stderr.
+        It does NOT parse for APILimitError itself; that's for the caller or wrapper.
         """
         logger.info(f"Executing scanner command for orchestration: {command}")
         try:
-            import shlex
+            # import shlex # Already at top level
             process = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout_str, stderr_str = process.communicate() # Wait for completion
+            stdout_str, stderr_str = process.communicate() 
             exit_code = process.returncode
 
             if stdout_str.strip():
                 logger.info(f"Scanner stdout:\n{stdout_str.strip()}")
             if stderr_str.strip():
-                logger.warning(f"Scanner stderr:\n{stderr_str.strip()}")
+                # Don't log full stderr here if it might contain the APILimitError signal, 
+                # as it would be redundant with more specific APILimitError logging.
+                # Let the specific APILimitError parsing log the relevant parts.
+                # For now, keep it for general errors.
+                # Consider only logging stderr if no APILimitError signal is found by the caller.
+                logger.warning(f"Scanner stderr:\n{stderr_str.strip()}") 
             
             logger.info(f"Scanner command finished with exit code: {exit_code}")
             return exit_code, stdout_str, stderr_str
