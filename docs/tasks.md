@@ -13,7 +13,7 @@ This document outlines the requirements for an application designed to identify 
 
 2. Database Interaction
 
-- [ ] Implement a function to query the database and determine which star numbers or star ranges have already been successfully processed by the scanner.
+- [x] Implement a function to query the database and determine which star numbers or star ranges have already been successfully processed by the scanner.
 - Consider how this is stored: Does the scanner log (min_stars, max_stars, status) for each run, or do you infer this from the star counts of collected repositories? The former is often easier for gap analysis.
 
 3. Gap Identification Logic

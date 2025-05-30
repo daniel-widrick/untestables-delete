@@ -815,6 +815,38 @@ def test_store_repository_metadata_updates_last_scanned_at(mock_github):
     """
     pass # Mark as passed or remove if fully merged. 
 
+def test_get_processed_star_counts(mock_github):
+    """Test fetching processed star counts from the database."""
+    client = GitHubClient(token="test_token", db_url="sqlite:///:memory:")
+    session = Session(bind=client.engine)
+
+    # Add some repositories with different star counts
+    repo1 = Repository(name="repo1", url="url1", star_count=100, last_scanned_at=datetime.utcnow(),
+                       missing_test_directories=False, missing_test_files=False, 
+                       missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False)
+    repo2 = Repository(name="repo2", url="url2", star_count=200, last_scanned_at=datetime.utcnow(),
+                       missing_test_directories=False, missing_test_files=False, 
+                       missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False)
+    repo3 = Repository(name="repo3", url="url3", star_count=100, last_scanned_at=datetime.utcnow(), # Duplicate star count
+                       missing_test_directories=False, missing_test_files=False, 
+                       missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False)
+    repo4 = Repository(name="repo4", url="url4", star_count=50, last_scanned_at=datetime.utcnow(),
+                       missing_test_directories=False, missing_test_files=False, 
+                       missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False)
+    
+    session.add_all([repo1, repo2, repo3, repo4])
+    session.commit()
+
+    processed_stars = client.get_processed_star_counts()
+    assert processed_stars == [50, 100, 200]
+
+    # Test with an empty database
+    session.query(Repository).delete()
+    session.commit()
+    processed_stars_empty = client.get_processed_star_counts()
+    assert processed_stars_empty == []
+    session.close()
+
 # Helper function to set up rate limit mock for pagination tests
 def setup_good_rate_limit_mock(mock_github_instance):
     mock_rate_limit_core = MagicMock()

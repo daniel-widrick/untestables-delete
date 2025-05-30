@@ -599,3 +599,20 @@ class GitHubClient:
         finally:
             session.close()
 
+    def get_processed_star_counts(self) -> list[int]:
+        """Get a sorted list of distinct star counts from successfully scanned repositories."""
+        logger.info("Fetching processed star counts from the database.")
+        session = self.Session()
+        try:
+            # Query for distinct star_count values from the Repository table
+            # Assuming all entries in Repository table are from successful scans or have last_scanned_at populated
+            query = session.query(Repository.star_count).distinct().order_by(Repository.star_count)
+            star_counts = [result[0] for result in query.all()]
+            logger.debug(f"Found {len(star_counts)} distinct processed star counts.")
+            return star_counts
+        except Exception as e:
+            logger.error(f"Error fetching processed star counts: {e}")
+            return [] # Return empty list on error
+        finally:
+            session.close()
+
