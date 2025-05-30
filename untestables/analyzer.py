@@ -2,6 +2,7 @@
 Analyzer service to identify star ranges that need scanning.
 """
 from typing import List, Tuple, Optional
+import subprocess # Add for subprocess execution
 
 # Replace standard logging with LoggingManager
 from common.logging import LoggingManager
@@ -103,6 +104,85 @@ class AnalyzerService:
         next_gap = chunked_gaps[0]
         logger.info(f"Selected next gap to process: {next_gap}")
         return next_gap
+
+    def construct_scanner_command(self, min_stars: int, max_stars: int) -> str:
+        """
+        Constructs the scanner command string with the given min and max stars.
+
+        Args:
+            min_stars (int): The minimum number of stars for the scan.
+            max_stars (int): The maximum number of of stars for the scan.
+
+        Returns:
+            str: The fully constructed scanner command string.
+        """
+        base_command = self.config.scanner_command
+        command = f"{base_command} --min-stars {min_stars} --max-stars {max_stars}"
+        logger.info(f"Constructed scanner command: {command}")
+        return command
+
+    def execute_scanner_command(self, command: str) -> int:
+        """
+        Executes the given scanner command as a subprocess and waits for completion.
+
+        Args:
+            command (str): The full command string to execute.
+
+        Returns:
+            int: The exit code of the scanner process.
+        """
+        logger.info(f"Executing scanner command: {command}")
+        try:
+            # Using shlex.split for better handling of commands with spaces/quotes if needed,
+            # though for the current simple command structure, direct string might be fine.
+            # For robustness with more complex base_commands in config, shlex is safer.
+            import shlex
+            process = subprocess.Popen(shlex.split(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, stderr = process.communicate() # Wait for completion
+            exit_code = process.returncode
+
+            if stdout:
+                logger.info(f"Scanner stdout:\n{stdout.decode().strip()}")
+            if stderr:
+                logger.warning(f"Scanner stderr:\n{stderr.decode().strip()}")
+            
+            logger.info(f"Scanner command finished with exit code: {exit_code}")
+            return exit_code
+        except FileNotFoundError:
+            logger.error(f"Error: The scanner command '{command.split()[0]}' was not found. Ensure it is installed and in PATH.")
+            return -1 # Or raise an specific exception
+        except Exception as e:
+            logger.error(f"An error occurred while executing scanner command '{command}': {e}")
+            return -1 # Or raise
+
+    def handle_scan_result(self, exit_code: int, stdout: str, stderr: str, scanned_range: Tuple[int, int]):
+        """
+        Handles the result of a scanner execution, including potential partial completion.
+        NOTE: Full partial completion logic (adjusting gaps) is not yet implemented.
+        This method currently logs the outcome.
+
+        Args:
+            exit_code (int): The exit code from the scanner.
+            stdout (str): The standard output from the scanner.
+            stderr (str): The standard error from the scanner.
+            scanned_range (Tuple[int, int]): The (min_stars, max_stars) that were attempted.
+        """
+        logger.info(f"Handling scan result for range {scanned_range}. Exit code: {exit_code}")
+        if exit_code == 0:
+            logger.info(f"Scan of range {scanned_range} completed successfully.")
+            # In the future, even with exit code 0, stdout/stderr might indicate partial completion.
+        # TODO: Define specific exit codes or stdout/stderr messages for partial completion.
+        # Example: if exit_code == 2 or "PARTIAL_COMPLETION" in stdout:
+        #     logger.warning(f"Scanner indicated partial completion for range {scanned_range}.")
+        #     # Here, logic would be needed to determine how much was processed and adjust the gap.
+        #     # For now, we assume any non-zero exit code means the whole chunk should be retried or marked as failed.
+        elif exit_code !=0:
+             logger.warning(f"Scan of range {scanned_range} failed or reported errors. Exit code: {exit_code}")
+
+        # Placeholder for logging related to partial completion signals
+        logger.debug("Current partial completion signal detection is not implemented beyond exit code analysis.")
+        # The actual adjustment of gap understanding would happen elsewhere, based on this method's findings.
+
 
 if __name__ == '__main__':
     # This is for basic testing of the AnalyzerService
@@ -236,3 +316,82 @@ if __name__ == '__main__':
     logger.info(f"Test select_next_gap with NO gaps: min={analyzer.config.abs_min_stars}, max={analyzer.config.abs_max_stars}")
     next_selected_gap_none = analyzer.select_next_gap()
     print(f"Selected next gap (should be None): {next_selected_gap_none}") 
+
+    # Test construct_scanner_command
+    print("\nTesting construct_scanner_command method...")
+    # analyzer.config.scanner_command should be "poetry run untestables" by default
+    # from get_config() if not overridden by .env
+    # Let's assume default config for this test print
+    
+    # Ensure config is using defaults if .env isn't set for SCANNER_COMMAND
+    # For the __main__ test, we can explicitly set it on the config instance for predictability
+    analyzer.config.scanner_command = "poetry run untestables" # Default
+    
+    test_min_stars, test_max_stars = 100, 200
+    constructed_cmd = analyzer.construct_scanner_command(test_min_stars, test_max_stars)
+    expected_cmd = f"poetry run untestables --min-stars {test_min_stars} --max-stars {test_max_stars}"
+    print(f"Constructed command: {constructed_cmd}")
+    print(f"Expected command:    {expected_cmd}")
+    assert constructed_cmd == expected_cmd
+
+    # Test with a different command from config
+    analyzer.config.scanner_command = "my_custom_scanner --path /app"
+    custom_min, custom_max = 1, 5
+    constructed_cmd_custom = analyzer.construct_scanner_command(custom_min, custom_max)
+    expected_cmd_custom = f"my_custom_scanner --path /app --min-stars {custom_min} --max-stars {custom_max}"
+    print(f"Constructed custom command: {constructed_cmd_custom}")
+    print(f"Expected custom command:    {expected_cmd_custom}")
+    assert constructed_cmd_custom == expected_cmd_custom
+
+    # Test execute_scanner_command
+    print("\nTesting execute_scanner_command method...")
+    
+    # Test 1: Successful command (e.g., a simple echo)
+    # On Windows, 'echo' is a shell builtin. On Unix, '/bin/echo' or 'echo'.
+    # Using sys.platform to make it a bit more cross-platform for a simple test.
+    import sys
+    echo_command = "echo Hello Analyzer"
+    if sys.platform == "win32":
+        # Popen on Windows might need shell=True for builtins like echo,
+        # or use `cmd /c echo ...`. For simplicity, let's use a command that works more universally.
+        # `python -c "print('Hello Analyzer')"` is more reliable for a test.
+        test_success_cmd = 'python -c "import sys; sys.stdout.write(\'Hello Analyzer\'); sys.exit(0)"'
+    else:
+        test_success_cmd = "echo Hello Analyzer"
+
+    logger.info(f"Executing test success command: {test_success_cmd}")
+    exit_code_success = analyzer.execute_scanner_command(test_success_cmd)
+    print(f"Test command '{test_success_cmd}' exited with: {exit_code_success}")
+    assert exit_code_success == 0
+
+    # Test 2: Command that fails (e.g., a non-existent command or command that errors)
+    test_fail_cmd = "non_existent_command_analyzer_test --arg"
+    logger.info(f"Executing test fail command: {test_fail_cmd}")
+    exit_code_fail = analyzer.execute_scanner_command(test_fail_cmd)
+    print(f"Test command '{test_fail_cmd}' exited with: {exit_code_fail}")
+    # Expecting -1 due to FileNotFoundError or other Exception handled in the method
+    assert exit_code_fail == -1
+
+    # Test 3: Command that exists but returns non-zero exit code
+    if sys.platform == "win32":
+        test_error_exit_cmd = 'python -c "import sys; sys.stderr.write(\'Simulated error\'); sys.exit(5)"'
+    else:
+        # Using `false` command on Unix-like systems
+        test_error_exit_cmd = "false" 
+    
+    logger.info(f"Executing test error exit command: {test_error_exit_cmd}")
+    exit_code_error = analyzer.execute_scanner_command(test_error_exit_cmd)
+    print(f"Test command '{test_error_exit_cmd}' exited with: {exit_code_error}")
+    if sys.platform != "win32": # `false` exits with 1
+        assert exit_code_error == 1
+    else: # python script exits with 5
+        assert exit_code_error == 5 
+
+    # Test handle_scan_result (basic logging test)
+    print("\nTesting handle_scan_result method (logging checks mostly)...")
+    test_range = (100,200)
+    analyzer.handle_scan_result(0, "Completed fully", "", test_range)
+    analyzer.handle_scan_result(1, "", "An error occurred", test_range)
+    # To test partial completion logging, we'd need to simulate that signal
+    # For now, it just logs the debug message about non-implementation
+    analyzer.handle_scan_result(2, "PARTIAL_COMPLETION_SIGNAL", "", test_range) 

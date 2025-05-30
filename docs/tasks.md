@@ -29,17 +29,17 @@ This document outlines the requirements for an application designed to identify 
 
 - [x] Gap Selection and Prioritization:
   - If no scanner is active and gaps exist, select a gap to process. (Strategy: e.g., the lowest available star range first, or the smallest gap).
-- [ ] Determine Scan Parameters:
+- [x] Determine Scan Parameters:
   - For the selected gap, calculate the min_stars and max_stars for the next scanner run. This should not exceed your configured "chunk size" (e.g., if a gap is 500-1000 and chunk size is 100, the next scan would be min_stars=500, max_stars=600).
-- [ ] Construct Scanner Command:
+- [x] Construct Scanner Command:
   - Dynamically build the full command string, for example: poetry run untestables --min-stars <calculated_min> --max-stars <calculated_max>.
-- [ ] Execute Scanner:
+- [x] Execute Scanner:
   - Run the scanner command as a subprocess.
-- [ ] Wait for the scanner subprocess to complete.
-- [ ] Handle Scanner Output:
+- [x] Wait for the scanner subprocess to complete.
+- [x] Handle Scanner Output:
   - Capture the scanner's exit code.
   - Optionally, capture stdout and stderr for logging.
-- [ ] If the scanner indicates partial completion (e.g., due to API limits), the analyzer might need to log this or adjust its understanding of the remaining gap.
+- [x] If the scanner indicates partial completion (e.g., due to API limits), the analyzer might need to log this or adjust its understanding of the remaining gap.
 
 6. Logging and Monitoring
 
