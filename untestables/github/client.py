@@ -7,11 +7,12 @@ from typing import Optional, Callable, Any
 from github import Github
 from github.GithubException import GithubException, RateLimitExceededException
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, DateTime
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from common.logging import LoggingManager
 from datetime import datetime, timedelta
+
+from .models import Base, Repository
 
 # Set up logging for this module via LoggingManager
 logger = LoggingManager.get_logger('app.github_client')
@@ -79,28 +80,6 @@ def retry_on_failure(max_retries: int = 3, delay: float = 1.0, backoff: float = 
         return wrapper
 
     return decorator
-
-
-Base = declarative_base()
-
-
-class Repository(Base):
-    __tablename__ = 'repositories'
-    id = Column(Integer, primary_key=True)
-    name = Column(String(255), nullable=False)  # Repository name (e.g., "my-project")
-    description = Column(Text, nullable=True)
-    star_count = Column(Integer, nullable=False)
-    url = Column(String(255), nullable=False)  # HTML URL (e.g., "https://github.com/owner/my-project")
-    # Consider adding full_name (e.g., "owner/my-project") if you need to ensure uniqueness across owners
-    # and for easier matching if get_recently_scanned_repos returns full_name.
-    # full_name = Column(String(511), nullable=False, unique=True) # Example
-    missing_test_directories = Column(Boolean, nullable=False)
-    missing_test_files = Column(Boolean, nullable=False)
-    missing_test_config_files = Column(Boolean, nullable=False)
-    missing_cicd_configs = Column(Boolean, nullable=False)
-    missing_readme_mentions = Column(Boolean, nullable=False)
-    last_scanned_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    language = Column(String(50), nullable=True)
 
 
 class GitHubClient:
@@ -188,7 +167,6 @@ class GitHubClient:
             logger.warning(f"Rate limit is low: {info['remaining']} remaining, resets at {reset_time_str}")
         return info
 
-# In client.py (client_v3.py)
     @retry_on_failure()
     def get_paginated_results(self, query: str, per_page: int = 30) -> list:
         logger.info(f"Executing search query: {query}. PyGithub client default per_page is used.")
@@ -266,7 +244,10 @@ class GitHubClient:
             "description": repo.description,
             "star_count": repo.stargazers_count,
             "url": repo.html_url,  # Full HTML URL
-            "language": getattr(repo, "language", language) or language  # Primary language
+            "language": getattr(repo, "language", language) or language,  # Primary language
+            "last_push_time": repo.pushed_at,
+            "last_metadata_update_time": repo.updated_at,
+            "creation_time": repo.created_at
             # "full_name": repo.full_name # "owner/repo" - good to store if not using URL as unique ID
         }
         logger.debug(f"Repository metadata: {metadata}")
@@ -296,7 +277,10 @@ class GitHubClient:
                 "missing_test_config_files": missing.get("test_config_files", False),
                 "missing_cicd_configs": missing.get("cicd_configs", False),
                 "missing_readme_mentions": missing.get("readme_mentions", False),
-                "last_scanned_at": datetime.utcnow()
+                "last_scanned_at": datetime.utcnow(),
+                "last_push_time": metadata.get("last_push_time"),
+                "last_metadata_update_time": metadata.get("last_metadata_update_time"),
+                "creation_time": metadata.get("creation_time")
             }
 
             # Check if repo already exists by URL (which should be unique)

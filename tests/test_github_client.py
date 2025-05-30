@@ -263,13 +263,23 @@ def test_get_repository_metadata(mock_github):
     mock_repo.description = "A test repository"
     mock_repo.stargazers_count = 100
     mock_repo.html_url = "https://github.com/owner/test-repo"
+    # Add the new timestamp fields to the mock_repo
+    mock_repo.pushed_at = datetime(2023, 1, 1, 10, 0, 0)
+    mock_repo.updated_at = datetime(2023, 1, 2, 11, 0, 0)
+    mock_repo.created_at = datetime(2022, 1, 1, 12, 0, 0)
     mock_github.return_value.get_repo.return_value = mock_repo
+
     client = GitHubClient(token="test_token")
     metadata = client.get_repository_metadata("owner/test-repo")
+
     assert metadata["name"] == "test-repo"
     assert metadata["description"] == "A test repository"
     assert metadata["star_count"] == 100
     assert metadata["url"] == "https://github.com/owner/test-repo"
+    # Add assertions for the new timestamp fields
+    assert metadata["last_push_time"] == datetime(2023, 1, 1, 10, 0, 0)
+    assert metadata["last_metadata_update_time"] == datetime(2023, 1, 2, 11, 0, 0)
+    assert metadata["creation_time"] == datetime(2022, 1, 1, 12, 0, 0)
 
 def test_get_repository_metadata_not_found(mock_github):
     """Test that get_repository_metadata handles repository not found gracefully."""
@@ -286,7 +296,11 @@ def test_store_repository_metadata(mock_github):
         "description": "A test repository",
         "star_count": 100,
         "url": "https://github.com/owner/test-repo",
-        "language": "python"
+        "language": "python",
+        # Add new timestamp fields
+        "last_push_time": datetime(2023, 1, 1, 10, 0, 0),
+        "last_metadata_update_time": datetime(2023, 1, 2, 11, 0, 0),
+        "creation_time": datetime(2022, 1, 1, 12, 0, 0)
     }
     missing = {
         "test_directories": False, "test_files": False, "test_config_files": False,
@@ -302,6 +316,10 @@ def test_store_repository_metadata(mock_github):
     assert repo1.star_count == 100
     assert repo1.language == "python"
     assert repo1.missing_test_directories is False
+    # Add assertions for new timestamp fields
+    assert repo1.last_push_time == datetime(2023, 1, 1, 10, 0, 0)
+    assert repo1.last_metadata_update_time == datetime(2023, 1, 2, 11, 0, 0)
+    assert repo1.creation_time == datetime(2022, 1, 1, 12, 0, 0)
     initial_last_scanned_at = repo1.last_scanned_at
     assert initial_last_scanned_at is not None
     session.close()
@@ -315,7 +333,11 @@ def test_store_repository_metadata(mock_github):
         "description": "An updated test repository",
         "star_count": 150,
         "url": "https://github.com/owner/test-repo", # Same URL
-        "language": "python"
+        "language": "python",
+        # Add new timestamp fields (can be same or different for update test)
+        "last_push_time": datetime(2023, 1, 5, 10, 0, 0), # Simulate a new push
+        "last_metadata_update_time": datetime(2023, 1, 6, 11, 0, 0), # Simulate new metadata update
+        "creation_time": datetime(2022, 1, 1, 12, 0, 0) # Creation time should not change
     }
     # Missing flags could also be updated
     updated_missing = {
@@ -332,6 +354,10 @@ def test_store_repository_metadata(mock_github):
     assert updated_repo.language == "python" # Assuming language doesn't change here
     assert updated_repo.missing_test_directories is True
     assert updated_repo.missing_test_files is True
+    # Add assertions for new timestamp fields on update
+    assert updated_repo.last_push_time == datetime(2023, 1, 5, 10, 0, 0)
+    assert updated_repo.last_metadata_update_time == datetime(2023, 1, 6, 11, 0, 0)
+    assert updated_repo.creation_time == datetime(2022, 1, 1, 12, 0, 0) # Should remain the same
     assert updated_repo.last_scanned_at > initial_last_scanned_at
 
     # Check that only one record exists for this URL
@@ -756,23 +782,33 @@ def test_get_recently_scanned_repos(mock_github):
     repo2_url = "https://github.com/owner/repo2"
     repo3_url = "https://github.com/owner/repo3"
 
+    # Add new timestamp fields to Repository instantiation
     repo1 = Repository(
         name="repo1", description="Test repo 1", star_count=100, url=repo1_url,
         language="python", missing_test_directories=False, missing_test_files=False,
         missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
-        last_scanned_at=now - timedelta(days=1)
+        last_scanned_at=now - timedelta(days=1),
+        last_push_time=now - timedelta(days=2),
+        last_metadata_update_time=now - timedelta(days=1),
+        creation_time=now - timedelta(days=365)
     )
     repo2 = Repository(
         name="repo2", description="Test repo 2", star_count=200, url=repo2_url,
         language="python", missing_test_directories=True, missing_test_files=True,
         missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
-        last_scanned_at=now - timedelta(days=31)
+        last_scanned_at=now - timedelta(days=31),
+        last_push_time=now - timedelta(days=32),
+        last_metadata_update_time=now - timedelta(days=31),
+        creation_time=now - timedelta(days=400)
     )
     repo3 = Repository( # Another recently scanned repo
         name="repo3", description="Test repo 3", star_count=50, url=repo3_url,
         language="javascript", missing_test_directories=False, missing_test_files=False,
         missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
-        last_scanned_at=now - timedelta(days=5)
+        last_scanned_at=now - timedelta(days=5),
+        last_push_time=now - timedelta(days=6),
+        last_metadata_update_time=now - timedelta(days=5),
+        creation_time=now - timedelta(days=200)
     )
     
     session.add_all([repo1, repo2, repo3])
@@ -823,16 +859,28 @@ def test_get_processed_star_counts(mock_github):
     # Add some repositories with different star counts
     repo1 = Repository(name="repo1", url="url1", star_count=100, last_scanned_at=datetime.utcnow(),
                        missing_test_directories=False, missing_test_files=False, 
-                       missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False)
+                       missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
+                       last_push_time=datetime.utcnow() - timedelta(days=1), 
+                       last_metadata_update_time=datetime.utcnow() - timedelta(days=1), 
+                       creation_time=datetime.utcnow() - timedelta(days=10))
     repo2 = Repository(name="repo2", url="url2", star_count=200, last_scanned_at=datetime.utcnow(),
                        missing_test_directories=False, missing_test_files=False, 
-                       missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False)
+                       missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
+                       last_push_time=datetime.utcnow() - timedelta(days=2), 
+                       last_metadata_update_time=datetime.utcnow() - timedelta(days=2), 
+                       creation_time=datetime.utcnow() - timedelta(days=20))
     repo3 = Repository(name="repo3", url="url3", star_count=100, last_scanned_at=datetime.utcnow(), # Duplicate star count
                        missing_test_directories=False, missing_test_files=False, 
-                       missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False)
+                       missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
+                       last_push_time=datetime.utcnow() - timedelta(days=3), 
+                       last_metadata_update_time=datetime.utcnow() - timedelta(days=3), 
+                       creation_time=datetime.utcnow() - timedelta(days=30))
     repo4 = Repository(name="repo4", url="url4", star_count=50, last_scanned_at=datetime.utcnow(),
                        missing_test_directories=False, missing_test_files=False, 
-                       missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False)
+                       missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
+                       last_push_time=datetime.utcnow() - timedelta(days=4), 
+                       last_metadata_update_time=datetime.utcnow() - timedelta(days=4), 
+                       creation_time=datetime.utcnow() - timedelta(days=40))
     
     session.add_all([repo1, repo2, repo3, repo4])
     session.commit()
