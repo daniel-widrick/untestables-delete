@@ -18,9 +18,9 @@ This document outlines the requirements for an application designed to identify 
 
 3. Gap Identification Logic
 
-- [ ] Fetch Processed Ranges:
+- [x] Fetch Processed Ranges:
   - Retrieve the sorted list of distinct star counts or successfully scanned ranges from the database.
-- [ ] Calculate Missing Ranges ("Gaps"):
+- [x] Calculate Missing Ranges ("Gaps"):
   - Compare the processed ranges against your configured overall desired star range.
   - Identify all contiguous blocks of star numbers that have not been scanned.
   - If a very large gap is found, plan to break it down into smaller chunks based on the configured "chunk size."
