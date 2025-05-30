@@ -27,7 +27,7 @@ This document outlines the requirements for an application designed to identify 
 
 5. Scanner Invocation and Management
 
-- [ ] Gap Selection and Prioritization:
+- [x] Gap Selection and Prioritization:
   - If no scanner is active and gaps exist, select a gap to process. (Strategy: e.g., the lowest available star range first, or the smallest gap).
 - [ ] Determine Scan Parameters:
   - For the selected gap, calculate the min_stars and max_stars for the next scanner run. This should not exceed your configured "chunk size" (e.g., if a gap is 500-1000 and chunk size is 100, the next scan would be min_stars=500, max_stars=600).

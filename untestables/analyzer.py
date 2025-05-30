@@ -1,7 +1,7 @@
 """
 Analyzer service to identify star ranges that need scanning.
 """
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 # Replace standard logging with LoggingManager
 from common.logging import LoggingManager
@@ -83,6 +83,27 @@ class AnalyzerService:
         logger.info(f"Identified {len(chunked_gaps)} chunked gap(s): {chunked_gaps}")
         return chunked_gaps
 
+    def select_next_gap(self) -> Optional[Tuple[int, int]]:
+        """
+        Selects the next gap to process based on the configured strategy.
+        Currently, it selects the lowest available star range first.
+
+        Returns:
+            Optional[Tuple[int, int]]: The (min_stars, max_stars) for the next scan,
+                                       or None if no gaps are available.
+        """
+        chunked_gaps = self.calculate_missing_ranges()
+
+        if not chunked_gaps:
+            logger.info("No gaps found to process.")
+            return None
+
+        # Strategy: Select the lowest available star range first.
+        # The calculate_missing_ranges already returns them sorted and chunked.
+        next_gap = chunked_gaps[0]
+        logger.info(f"Selected next gap to process: {next_gap}")
+        return next_gap
+
 if __name__ == '__main__':
     # This is for basic testing of the AnalyzerService
     # You would need to set GITHUB_TOKEN and DATABASE_URL environment variables
@@ -160,4 +181,58 @@ if __name__ == '__main__':
     analyzer.github_client = MockLargeGapClient()
     print(f"Testing with large gaps (min={analyzer.config.abs_min_stars}, max={analyzer.config.abs_max_stars}, chunk={analyzer.config.default_chunk_size})")
     missing_ranges_large_gap = analyzer.calculate_missing_ranges()
-    print(f"Calculated missing ranges (large gap): {missing_ranges_large_gap}") 
+    print(f"Calculated missing ranges (large gap): {missing_ranges_large_gap}")
+
+    # Test select_next_gap
+    print("\nTesting select_next_gap method...")
+    # analyzer.github_client is already MockLargeGapClient from previous test
+    # Config: abs_min=0, abs_max=1000, chunk=100. Processed: [10,20,900,950]
+    # Expected gaps from MockLargeGapClient and this config:
+    # (0,9), (21,120) -> chunked to (21,100) then (101,120) ... etc.
+    # Let's re-initialize for clarity here or use a specific mock setup
+
+    analyzer.config.abs_min_stars = 0
+    analyzer.config.abs_max_stars = 250 # Small range for easier verification
+    analyzer.config.default_chunk_size = 100
+    class MockSelectTestClient:
+        def get_processed_star_counts(self):
+            return [50, 51, 52, 150, 151] # Gaps: 0-49, 53-149, 152-250
+    analyzer.github_client = MockSelectTestClient()
+    logger.info(f"Test select_next_gap with config: min={analyzer.config.abs_min_stars}, max={analyzer.config.abs_max_stars}, chunk={analyzer.config.default_chunk_size}")
+    
+    next_selected_gap = analyzer.select_next_gap()
+    print(f"Selected next gap: {next_selected_gap}") # Expected: (0,99) or (0,49) depending on exact gap logic for first block
+                                                    # With current logic: gap 0-49 -> chunk (0,99) if chunk is 100. Range is 0-49. So (0,49)
+                                                    # Gaps: (0,49), (53,149), (152,250)
+                                                    # Chunked: (0,49), (53,149), (152,249), (250,250) based on chunk 100
+                                                    # Actually, for 53-149 with chunk 100: (53, 149) -> (53, (53+100-1)=152) -> min(152, 149) -> (53,149)
+                                                    # For 152-250: (152, 250) -> (152, (152+100-1)=251) -> min(251, 250) -> (152,250)
+                                                    # Let's recheck calculate_missing_ranges output carefully. 
+                                                    # Processed: [50, 51, 52, 150, 151]. Min=0, Max=250, Chunk=100
+                                                    # Relevant processed for gaps: [50, 51, 52, 150, 151, 251 (sentinel)]
+                                                    # 1. last_processed = -1. star_val=50. 50 > 0. gap_start=0, gap_end=min(49,250)=49. Gaps=[(0,49)]
+                                                    #    last_processed=50.
+                                                    # 2. star_val=51. 51 > 50+1 no. last_processed=51.
+                                                    # 3. star_val=52. 52 > 51+1 no. last_processed=52.
+                                                    # 4. star_val=150. 150 > 52+1 yes. gap_start=53, gap_end=min(149,250)=149. Gaps=[(0,49), (53,149)]
+                                                    #    last_processed=150.
+                                                    # 5. star_val=151. 151 > 150+1 no. last_processed=151.
+                                                    # 6. star_val=251. 251 > 151+1 yes. gap_start=152, gap_end=min(250,250)=250. Gaps=[(0,49), (53,149), (152,250)]
+                                                    #    last_processed=251. Loop ends.
+                                                    # Raw gaps: [(0,49), (53,149), (152,250)]
+                                                    # Chunking:
+                                                    # (0,49) -> current=0. chunk_end=min(0+100-1, 49)=min(99,49)=49. chunked=[(0,49)]. current=50. current>49, loop ends.
+                                                    # (53,149) -> current=53. chunk_end=min(53+100-1, 149)=min(152,149)=149. chunked=[(0,49), (53,149)]. current=150. current>149, loop ends.
+                                                    # (152,250) -> current=152. chunk_end=min(152+100-1, 250)=min(251,250)=250. chunked=[(0,49), (53,149), (152,250)]. current=251. current>250, loop ends.
+                                                    # Final chunked gaps: [(0,49), (53,149), (152,250)]
+                                                    # So, select_next_gap should return (0,49).
+
+    # Test with no gaps
+    analyzer.config.abs_min_stars = 50
+    analyzer.config.abs_max_stars = 52
+    # analyzer.github_client is still MockSelectTestClient, processed: [50, 51, 52, 150, 151]
+    # Relevant for this config: [50,51,52, 53(sentinel)]
+    # Gaps will be empty.
+    logger.info(f"Test select_next_gap with NO gaps: min={analyzer.config.abs_min_stars}, max={analyzer.config.abs_max_stars}")
+    next_selected_gap_none = analyzer.select_next_gap()
+    print(f"Selected next gap (should be None): {next_selected_gap_none}") 

@@ -220,4 +220,38 @@ def test_calculate_missing_ranges_max_stars_is_zero(analyzer_service, mock_confi
         analyzer_service.config = mock_config
         expected_gaps = []
         gaps = analyzer_service.calculate_missing_ranges()
-        assert gaps == expected_gaps 
+        assert gaps == expected_gaps
+
+def test_select_next_gap_with_available_gaps(analyzer_service):
+    """Test that select_next_gap returns the first available gap."""
+    # Mock calculate_missing_ranges to return a predefined list of gaps
+    mock_gaps = [(10, 20), (30, 40), (50, 60)]
+    analyzer_service.calculate_missing_ranges = MagicMock(return_value=mock_gaps)
+    
+    selected_gap = analyzer_service.select_next_gap()
+    assert selected_gap == mock_gaps[0]
+    analyzer_service.calculate_missing_ranges.assert_called_once()
+
+def test_select_next_gap_no_gaps_available(analyzer_service):
+    """Test that select_next_gap returns None when no gaps are available."""
+    analyzer_service.calculate_missing_ranges = MagicMock(return_value=[])
+    
+    selected_gap = analyzer_service.select_next_gap()
+    assert selected_gap is None
+    analyzer_service.calculate_missing_ranges.assert_called_once()
+
+def test_select_next_gap_uses_calculate_missing_ranges_output(analyzer_service, mock_config):
+    """Test that select_next_gap correctly uses the output of calculate_missing_ranges.
+    This test integrates more with the actual calculate_missing_ranges logic via mocks.
+    """
+    # This setup is similar to test_calculate_missing_ranges_some_gaps
+    # Config: min=100, max=500, chunk=50
+    # Processed: 100-149, 200-249, 300-349, 400-449, 500
+    # Expected Gaps from calculate_missing_ranges: (150,199), (250,299), (350,399), (450,499)
+    processed = list(range(100,150)) + list(range(200,250)) + list(range(300,350)) + list(range(400,450)) + [500]
+    analyzer_service.github_client.get_processed_star_counts = MagicMock(return_value=processed)
+    
+    # select_next_gap should pick the first of these calculated gaps
+    expected_first_gap = (150, 199)
+    selected_gap = analyzer_service.select_next_gap()
+    assert selected_gap == expected_first_gap 
