@@ -39,10 +39,13 @@ def main(min_stars: int, max_stars: int, rescan_days: Optional[int] = None, forc
     # No need to call setup_logging() or get_logger() here again.
     
     logger.info(f"Starting repository search with {min_stars} to {max_stars} stars")
+    click.echo(f"Starting repository search with {min_stars} to {max_stars} stars")
     if rescan_days:
         logger.info(f"Will re-scan repositories last scanned more than {rescan_days} days ago")
+        click.echo(f"Will re-scan repositories last scanned more than {rescan_days} days ago")
     if force_rescan:
         logger.info("Force re-scan enabled - will scan all repositories")
+        click.echo("Force re-scan enabled - will scan all repositories")
     
     try:
         client = GitHubClient()
