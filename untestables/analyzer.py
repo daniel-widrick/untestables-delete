@@ -165,7 +165,7 @@ class AnalyzerService:
         base_command = self.config.scanner_command
         command = f"{base_command} --min-stars {min_stars} --max-stars {max_stars}"
         if end_time_iso:
-            command += f" --end-time {shlex.quote(end_time_iso)}" # Ensure end_time_iso is quoted if it contains spaces or special chars
+            command += f" --end-time-iso {shlex.quote(end_time_iso)}" # Changed to --end-time-iso
         logger.info(f"Constructed scanner command: {command}")
         return command
 

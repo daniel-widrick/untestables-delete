@@ -219,7 +219,7 @@ class GitHubClient:
 
     @retry_on_failure()
     def filter_repositories(self, language: str = "Python", min_stars: int = 0, max_stars: int = None, # max_stars can be None
-                            keywords: list = None, max_results: int = 1000, end_time_iso: Optional[str] = None) -> List[Repository.Repository]: # Type hint is github.Repository.Repository
+                            keywords: list = None, max_results: int = 1000) -> List[Repository.Repository]: # Type hint is github.Repository.Repository
         """Filter repositories based on specified criteria using paginated search."""
         query_parts = []
         if language:
@@ -241,8 +241,8 @@ class GitHubClient:
         query = " ".join(query_parts)
         logger.info(f"Constructed repository search query: {query}")
         
-        # Use the paginated search method, passing through end_time_iso
-        return self.search_repositories_paginated(query=query, max_results=max_results, end_time_iso=end_time_iso)
+        # Use the paginated search method, removing end_time_iso
+        return self.search_repositories_paginated(query=query, max_results=max_results)
 
     @retry_on_failure()
     def get_repository_metadata(self, repo_name: str, language: str = "python") -> dict:
@@ -647,63 +647,41 @@ class GitHubClient:
                 "search": {"limit": 0, "remaining": 0, "reset_time_unix": None, "reset_time_datetime": None}
             }
 
-    def search_repositories_paginated(self, query: str, max_results: int = 1000, end_time_iso: Optional[str] = None) -> List[Repository.Repository]: # Type hint is github.Repository.Repository
+    def search_repositories_paginated(self, query: str, max_results: int = 1000) -> List[Repository.Repository]: # Type hint is github.Repository.Repository
         """
         Searches repositories using paginated results from PyGithub, respecting GitHub's result cap (1000).
-        Stops fetching if end_time_iso is provided and current time exceeds it.
         Args:
             query (str): The GitHub search query string.
             max_results (int): The maximum number of repositories to return.
                                Capped at 1000 due to GitHub API limitations for search.
-            end_time_iso (Optional[str]): ISO format timestamp. If provided, the function will stop fetching
-                                          new results if the current time is past this timestamp.
         Returns:
             List[Repository.Repository]: A list of repository objects.
         """
-        logger.info(f"Executing paginated repository search: '{query}'. Max results: {max_results}. End time: {end_time_iso}")
+        logger.info(f"Executing paginated repository search: '{query}'. Max results: {max_results}.") # Removed End time from log
         
-        # GitHub API limits search results to 1000. PyGithub handles pagination up to this limit.
-        # We ensure our max_results respects this, but PyGithub's PaginatedList will stop at 1000 anyway.
         effective_max_results = min(max_results, 1000)
         if max_results > 1000:
             logger.warning(f"Requested max_results {max_results} exceeds GitHub API limit of 1000. Will fetch at most 1000.")
 
         results: List[Repository.Repository] = []
-        end_time_dt: Optional[datetime] = None
-        if end_time_iso:
-            try:
-                end_time_dt = datetime.fromisoformat(end_time_iso.replace('Z', '+00:00'))
-                if end_time_dt.tzinfo is None:
-                    end_time_dt = end_time_dt.replace(tzinfo=timezone.utc)
-                logger.info(f"Search will stop if current time exceeds: {end_time_dt.isoformat()}")
-            except ValueError:
-                logger.error(f"Invalid end_time_iso format: '{end_time_iso}'. Continuing without time limit for this search.")
-                end_time_dt = None # Ensure it's None if parsing failed
+        # Removed end_time_dt parsing and related logic
 
         try:
-            # self.gh.search_repositories already returns a PaginatedList
-            # PyGithub's client has per_page=100 set in __init__
             paginated_list = self.gh.search_repositories(query=query)
             logger.debug(f"PyGithub PaginatedList obtained for query: {query}")
 
-            # Iterate over the paginated list. PyGithub handles fetching pages.
             for i, repo in enumerate(paginated_list):
-                if end_time_dt and datetime.now(timezone.utc) >= end_time_dt:
-                    logger.info(f"Search time limit ({end_time_dt.isoformat()}) reached. Stopping repository collection. Collected {len(results)} repos.")
-                    break
+                # Removed time check: if end_time_dt and datetime.now(timezone.utc) >= end_time_dt:
 
                 results.append(repo)
                 if len(results) >= effective_max_results:
                     logger.info(f"Reached effective_max_results ({effective_max_results}). Stopping repository collection.")
                     break
                 
-                # Log progress periodically, e.g., every 50-100 items if many results expected
                 if (i + 1) % 50 == 0:
                     logger.debug(f"Collected {len(results)} repositories so far for query '{query}'...")
-                    # Optionally, check rate limits here too if processing is very long
-                    # self.check_rate_limit() # Be mindful of how often this is called
             
-            logger.info(f"Finished collecting repositories for query '{query}'. Total collected: {len(results)}. ")
+            logger.info(f"Finished collecting repositories for query '{query}'. Total collected: {len(results)}.")
 
         except RateLimitExceededException as e: # PyGithub's exception
             # This exception should ideally be caught by the @retry_on_failure decorator.

@@ -65,7 +65,7 @@ def cli():
 @click.option('--max-stars', type=int, default=1000, help='Maximum number of stars')
 @click.option('--rescan-days', type=int, help='Re-scan repositories that were last scanned more than this many days ago')
 @click.option('--force-rescan', is_flag=True, help='Force re-scan of all repositories, ignoring last scan time')
-@click.option('--end-time', type=str, default=None, help='Optional ISO timestamp for when the find-repos process should stop itself.')
+@click.option('--end-time-iso', type=str, default=None, help='Optional ISO timestamp for when the find-repos process should stop itself.')
 def find_repos(min_stars: int, max_stars: int, rescan_days: Optional[int] = None, force_rescan: bool = False, end_time_iso: Optional[str] = None) -> None:
     """(Formerly main) Finds Python repositories based on stars and stores their test status."""
     # Logging is already set up. The logger instance is available globally in this module.
@@ -121,8 +121,7 @@ def find_repos(min_stars: int, max_stars: int, rescan_days: Optional[int] = None
             language="Python",
             min_stars=min_stars,
             max_stars=max_stars,
-            keywords=None, # Explicitly pass None as per original filter_repositories signature
-            end_time_iso=end_time_iso # Pass the end_time_iso string
+            keywords=None # Explicitly pass None as per original filter_repositories signature
         )
         
         if not repos:
@@ -133,11 +132,12 @@ def find_repos(min_stars: int, max_stars: int, rescan_days: Optional[int] = None
         logger.info(f"Found {len(repos)} repositories to analyze")
         click.echo(f"Found {len(repos)} repositories. Analyzing test coverage...")
         
-        start_time = datetime.now(timezone.utc)
-        end_time_overall = start_time + total_duration_td
-        logger.info(f"Scan command initiated. Total duration: {total_duration_td}. Scan will run until {end_time_overall.isoformat()}.")
-        
         for repo in repos:
+            # Check end_time before processing each repository
+            if end_time_dt and datetime.now(timezone.utc) >= end_time_dt:
+                logger.info(f"Time limit ({end_time_dt.isoformat()}) reached within find-repos loop. Stopping repository processing.")
+                break # Exit the loop
+
             repo_name = repo.full_name
             repo_url = repo.html_url
             
