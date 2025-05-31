@@ -64,7 +64,6 @@ poetry run untestables scan [OPTIONS]
 - `--duration TEXT` Total duration to run the scanner for (e.g., '7d', '12h', '30m'). Default: '7d' (7 days).
 - `--no-gaps-sleep TEXT` Sleep interval when no gaps are found to process (e.g., '1h', '30m'). Default: '1h' (1 hour).
 - `--cycle-sleep TEXT` Sleep interval between individual scan attempts/cycles (after a `find-repos` chunk is processed). Default: '1m' (1 minute).
-- `--db-url TEXT` Database URL. Can also be set via the `DATABASE_URL` environment variable.
 
 **Behavior of `scan`:**
 

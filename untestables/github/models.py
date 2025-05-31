@@ -11,7 +11,7 @@ class Repository(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(255), nullable=False)  # Repository name (e.g., "my-project")
     description = Column(Text, nullable=True)
-    star_count = Column(Integer, nullable=False)
+    star_count = Column(Integer, nullable=False, index=True)
     url = Column(String(255), nullable=False)  # HTML URL (e.g., "https://github.com/owner/my-project")
     missing_test_directories = Column(Boolean, nullable=False)
     missing_test_files = Column(Boolean, nullable=False)

@@ -219,7 +219,7 @@ class GitHubClient:
 
     @retry_on_failure()
     def filter_repositories(self, language: str = "Python", min_stars: int = 0, max_stars: int = None, # max_stars can be None
-                            keywords: list = None, max_results: int = 1000) -> List[Repository.Repository]: # Type hint is github.Repository.Repository
+                            keywords: list = None, max_results: int = 1000, end_time_iso: Optional[str] = None) -> List[Repository.Repository]: # Type hint is github.Repository.Repository
         """Filter repositories based on specified criteria using paginated search."""
         query_parts = []
         if language:
@@ -241,8 +241,8 @@ class GitHubClient:
         query = " ".join(query_parts)
         logger.info(f"Constructed repository search query: {query}")
         
-        # Use the paginated search method
-        return self.search_repositories_paginated(query=query, max_results=max_results)
+        # Use the paginated search method, passing through end_time_iso
+        return self.search_repositories_paginated(query=query, max_results=max_results, end_time_iso=end_time_iso)
 
     @retry_on_failure()
     def get_repository_metadata(self, repo_name: str, language: str = "python") -> dict:
@@ -598,16 +598,21 @@ class GitHubClient:
         logger.info("Fetching processed star counts from the database.")
         session = self.Session()
         try:
-            # Query for distinct star_count values from the Repository table
-            # Assuming all entries in Repository table are from successful scans or have last_scanned_at populated
             query = session.query(DBRepository.star_count).distinct().order_by(DBRepository.star_count)
-            star_counts = [result[0] for result in query.all()]
-            logger.debug(f"Found {len(star_counts)} distinct processed star counts.")
+            logger.info(f"Constructed query: {query}") # Using f-string for consistency
+            
+            logger.debug("Attempting to execute query.all() for processed star counts...")
+            results = query.all() # This is the suspected hanging point
+            logger.debug(f"query.all() executed. Number of results (tuples): {len(results)}")
+            
+            star_counts = [result[0] for result in results]
+            logger.debug(f"Found {len(star_counts)} distinct processed star counts after extracting from tuples.")
             return star_counts
         except Exception as e:
-            logger.error(f"Error fetching processed star counts: {e}")
-            return [] # Return empty list on error
+            logger.error(f"Error fetching processed star counts: {e}", exc_info=True)
+            return [] 
         finally:
+            logger.debug("Closing session in get_processed_star_counts.")
             session.close()
 
     def get_rate_limit_info(self) -> dict:
@@ -642,89 +647,79 @@ class GitHubClient:
                 "search": {"limit": 0, "remaining": 0, "reset_time_unix": None, "reset_time_datetime": None}
             }
 
-    def search_repositories_paginated(self, query: str, max_results: int = 1000) -> List[Repository.Repository]: # Type hint is github.Repository.Repository
-        logger.debug(f"Executing search_repositories_paginated with query: '{query}', max_results: {max_results}")
-        # Removed old pylint disable comments here
+    def search_repositories_paginated(self, query: str, max_results: int = 1000, end_time_iso: Optional[str] = None) -> List[Repository.Repository]: # Type hint is github.Repository.Repository
+        """
+        Searches repositories using paginated results from PyGithub, respecting GitHub's result cap (1000).
+        Stops fetching if end_time_iso is provided and current time exceeds it.
+        Args:
+            query (str): The GitHub search query string.
+            max_results (int): The maximum number of repositories to return.
+                               Capped at 1000 due to GitHub API limitations for search.
+            end_time_iso (Optional[str]): ISO format timestamp. If provided, the function will stop fetching
+                                          new results if the current time is past this timestamp.
+        Returns:
+            List[Repository.Repository]: A list of repository objects.
+        """
+        logger.info(f"Executing paginated repository search: '{query}'. Max results: {max_results}. End time: {end_time_iso}")
+        
+        # GitHub API limits search results to 1000. PyGithub handles pagination up to this limit.
+        # We ensure our max_results respects this, but PyGithub's PaginatedList will stop at 1000 anyway.
+        effective_max_results = min(max_results, 1000)
+        if max_results > 1000:
+            logger.warning(f"Requested max_results {max_results} exceeds GitHub API limit of 1000. Will fetch at most 1000.")
+
+        results: List[Repository.Repository] = []
+        end_time_dt: Optional[datetime] = None
+        if end_time_iso:
+            try:
+                end_time_dt = datetime.fromisoformat(end_time_iso.replace('Z', '+00:00'))
+                if end_time_dt.tzinfo is None:
+                    end_time_dt = end_time_dt.replace(tzinfo=timezone.utc)
+                logger.info(f"Search will stop if current time exceeds: {end_time_dt.isoformat()}")
+            except ValueError:
+                logger.error(f"Invalid end_time_iso format: '{end_time_iso}'. Continuing without time limit for this search.")
+                end_time_dt = None # Ensure it's None if parsing failed
+
         try:
-            current_limits = self.get_rate_limit_info()
-            search_limit_data = current_limits.get("search", {})
-            
-            logger.info(f"Search API rate limit: {search_limit_data.get('remaining')}/{search_limit_data.get('limit')}. Resets at {search_limit_data.get('reset_time_datetime')}")
-            if search_limit_data.get('remaining', 0) == 0 and search_limit_data.get('reset_time_datetime'):
-                reset_dt = search_limit_data['reset_time_datetime']
-                logger.warning(f"Search API rate limit currently 0. Will not proceed until {reset_dt}.")
-                raise APILimitError(
-                    f"Search API rate limit is 0. Reset at {reset_dt}.",
-                    reset_time_unix=search_limit_data['reset_time_unix'],
-                    reset_time_datetime=reset_dt
-                )
+            # self.gh.search_repositories already returns a PaginatedList
+            # PyGithub's client has per_page=100 set in __init__
+            paginated_list = self.gh.search_repositories(query=query)
+            logger.debug(f"PyGithub PaginatedList obtained for query: {query}")
 
-            results_pages = self.gh.search_repositories(query=query)
-            repositories = []
-            count = 0
-            # GitHub Search API limits to 1000 results (max 34 pages of 30 results)
-            # See: https://docs.github.com/en/rest/search/search?apiVersion=2022-11-28#search-repositories
-            # "Note: GitHub's REST API v3 considers every pull request an issue, but not every issue is a pull request.
-            # For this reason, the search results for issues and pull requests are separate.
-            # The Search API is optimized for showing the first page of results. 
-            # If you use the SSearch API to fetch all results you will experience secondary rate limits.
-            # Instead, consider using the Git Database API or webhooks.
-            # The Search API has a custom rate limit. For requests made with Basic Authentication, OAuth, or client ID and secret, 
-            # you can make up to 30 requests per minute. For unauthenticated requests, the rate limit is 10 requests per minute.
-            # See https://docs.github.com/rest/overview/rate-limits-for-the-rest-api#search-api for more information."
-            # We handle the 1000 result limit, and the 30 reqs/min is handled by PyGithub's rate limit handling / our APILimitError.
-            max_pages_for_search = 34 # Roughly 1000 results / 30 per page
-            page_num = 0
-            
-            logger.info(f"Iterating through search results for query: {query}")
-            for repo_item in results_pages: # repo_item is a github.Repository.Repository
-                if count >= max_results or page_num >= max_pages_for_search:
-                    logger.info(f"Reached max_results ({max_results}) or max_pages_for_search ({max_pages_for_search}). Stopping paginated search.")
+            # Iterate over the paginated list. PyGithub handles fetching pages.
+            for i, repo in enumerate(paginated_list):
+                if end_time_dt and datetime.now(timezone.utc) >= end_time_dt:
+                    logger.info(f"Search time limit ({end_time_dt.isoformat()}) reached. Stopping repository collection. Collected {len(results)} repos.")
                     break
-                repositories.append(repo_item)
-                count += 1
-                # If results are not paged by 30 (e.g. if PyGithub changes or we hit a weird case)
-                # this page_num logic might be imperfect but acts as a safeguard.
-                # The primary limit is `count >= max_results`.
-                if count % 30 == 0: 
-                    page_num +=1
-            
-            logger.info(f"Found {len(repositories)} repositories matching query '{query}' within API limits ({max_results} requested)." )
-            return repositories
 
-        except RateLimitExceededException as e:
-            logger.warning(f"GitHub API rate limit exceeded during repository search: {e.status} {e.data}")
-            reset_unix, reset_dt = None, None
-            if hasattr(e, 'headers') and e.headers:
-                reset_unix_str = e.headers.get('X-RateLimit-Reset')
-                if reset_unix_str:
-                    reset_unix = int(reset_unix_str)
-                    reset_dt = datetime.fromtimestamp(reset_unix, tz=timezone.utc)
+                results.append(repo)
+                if len(results) >= effective_max_results:
+                    logger.info(f"Reached effective_max_results ({effective_max_results}). Stopping repository collection.")
+                    break
+                
+                # Log progress periodically, e.g., every 50-100 items if many results expected
+                if (i + 1) % 50 == 0:
+                    logger.debug(f"Collected {len(results)} repositories so far for query '{query}'...")
+                    # Optionally, check rate limits here too if processing is very long
+                    # self.check_rate_limit() # Be mindful of how often this is called
             
-            if not reset_unix:
-                limits_info = self.get_rate_limit_info()
-                if limits_info.get("search",{}).get("remaining") == 0 and limits_info.get("search",{}).get("reset_time_unix"):
-                    reset_unix = limits_info["search"]["reset_time_unix"]
-                    reset_dt = limits_info["search"]["reset_time_datetime"]
-                elif limits_info.get("core",{}).get("remaining") == 0 and limits_info.get("core",{}).get("reset_time_unix"):
-                    reset_unix = limits_info["core"]["reset_time_unix"]
-                    reset_dt = limits_info["core"]["reset_time_datetime"]
-                else: 
-                    reset_unix = limits_info.get("search",{}).get("reset_time_unix") # Default to search reset if available
-                    reset_dt = limits_info.get("search",{}).get("reset_time_datetime")
-                    if not reset_unix: # Fallback to core if search reset still not found
-                         reset_unix = limits_info.get("core",{}).get("reset_time_unix")
-                         reset_dt = limits_info.get("core",{}).get("reset_time_datetime")
+            logger.info(f"Finished collecting repositories for query '{query}'. Total collected: {len(results)}. ")
 
-            raise APILimitError(
-                message=f"Rate limit hit: {e.data.get('message', 'GitHub API rate limit exceeded')}",
-                reset_time_unix=reset_unix,
-                reset_time_datetime=reset_dt
-            ) from e
+        except RateLimitExceededException as e: # PyGithub's exception
+            # This exception should ideally be caught by the @retry_on_failure decorator.
+            # If it reaches here, it means retries failed or decorator isn't applied to a calling method.
+            rl = self.gh.get_rate_limit().search # Check search-specific limit
+            reset_time = rl.reset.replace(tzinfo=timezone.utc)
+            logger.error(f"GitHub Search API rate limit exceeded during search: '{query}'. Limit will reset at {reset_time}. Error: {e}")
+            # Raise the custom APILimitError so AnalyzerService can see it
+            raise APILimitError(message=f"Search API rate limit hit: {e}", reset_time_datetime=reset_time) from e
         except GithubException as e:
-            logger.error(f"An unexpected GitHub API error occurred: {e.status} {e.data}", exc_info=True)
-            raise 
-        except Exception as e: 
-            logger.error(f"An unexpected error occurred during repository search: {str(e)}", exc_info=True)
-            raise
+            logger.error(f"An unexpected GitHub API error occurred during search '{query}': {e}", exc_info=True)
+            # Depending on policy, either raise a custom error or the original GithubException
+            raise # Re-raise the original error to be handled by caller or retry decorator
+        except Exception as e:
+            logger.error(f"A non-GitHub error occurred during repository search '{query}': {e}", exc_info=True)
+            raise # Re-raise
+            
+        return results
 

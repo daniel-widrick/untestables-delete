@@ -1,6 +1,6 @@
 import click
 import os
-from datetime import datetime, timedelta # Ensure timedelta is imported
+from datetime import datetime, timedelta, timezone
 import time # For sleep
 from typing import Optional
 from common.logging import LoggingManager
@@ -65,7 +65,8 @@ def cli():
 @click.option('--max-stars', type=int, default=1000, help='Maximum number of stars')
 @click.option('--rescan-days', type=int, help='Re-scan repositories that were last scanned more than this many days ago')
 @click.option('--force-rescan', is_flag=True, help='Force re-scan of all repositories, ignoring last scan time')
-def find_repos(min_stars: int, max_stars: int, rescan_days: Optional[int] = None, force_rescan: bool = False) -> None:
+@click.option('--end-time', type=str, default=None, help='Optional ISO timestamp for when the find-repos process should stop itself.')
+def find_repos(min_stars: int, max_stars: int, rescan_days: Optional[int] = None, force_rescan: bool = False, end_time_iso: Optional[str] = None) -> None:
     """(Formerly main) Finds Python repositories based on stars and stores their test status."""
     # Logging is already set up. The logger instance is available globally in this module.
     # No need to call setup_logging() or get_logger() here again.
@@ -79,6 +80,18 @@ def find_repos(min_stars: int, max_stars: int, rescan_days: Optional[int] = None
         logger.info("Force re-scan enabled - will scan all repositories")
         click.echo("Force re-scan enabled - will scan all repositories")
     
+    end_time_dt: Optional[datetime] = None
+    if end_time_iso:
+        try:
+            end_time_dt = datetime.fromisoformat(end_time_iso.replace('Z', '+00:00'))
+            if end_time_dt.tzinfo is None:
+                end_time_dt = end_time_dt.replace(tzinfo=timezone.utc) # Assume UTC if not specified
+            logger.info(f"Scan process will stop if current time exceeds: {end_time_dt.isoformat()}")
+        except ValueError:
+            logger.error(f"Invalid --end-time format: '{end_time_iso}'. Please use ISO format. Continuing without time limit.")
+            # Continue without an end_time if parsing fails, or handle as a fatal error
+            # For now, just log and proceed without it.
+
     try:
         client = GitHubClient()
         logger.info("GitHub client initialized")
@@ -108,7 +121,8 @@ def find_repos(min_stars: int, max_stars: int, rescan_days: Optional[int] = None
             language="Python",
             min_stars=min_stars,
             max_stars=max_stars,
-            keywords=None # Explicitly pass None as per original filter_repositories signature
+            keywords=None, # Explicitly pass None as per original filter_repositories signature
+            end_time_iso=end_time_iso # Pass the end_time_iso string
         )
         
         if not repos:
@@ -118,6 +132,10 @@ def find_repos(min_stars: int, max_stars: int, rescan_days: Optional[int] = None
             
         logger.info(f"Found {len(repos)} repositories to analyze")
         click.echo(f"Found {len(repos)} repositories. Analyzing test coverage...")
+        
+        start_time = datetime.now(timezone.utc)
+        end_time_overall = start_time + total_duration_td
+        logger.info(f"Scan command initiated. Total duration: {total_duration_td}. Scan will run until {end_time_overall.isoformat()}.")
         
         for repo in repos:
             repo_name = repo.full_name
@@ -164,8 +182,8 @@ def find_repos(min_stars: int, max_stars: int, rescan_days: Optional[int] = None
                 click.echo(f"Error processing {repo_name}: {str(e)}", err=True)
                 continue 
                 
-        logger.info(f"'{find_repos.__name__}' command complete.")
-        click.echo(f"\n'{find_repos.__name__}' analysis complete! Results have been stored in the database.")
+        logger.info(f"'{find_repos.name}' command complete.")
+        click.echo(f"\n'{find_repos.name}' analysis complete! Results have been stored in the database.")
         sys.exit(0) # Successful completion
         
     except APILimitError as e:
@@ -175,16 +193,18 @@ def find_repos(min_stars: int, max_stars: int, rescan_days: Optional[int] = None
         click.echo(f"Error: GitHub API rate limit hit. {e.message}. Check logs. Try again later.", err=True)
         sys.exit(SCANNER_CLI_APILIMIT_EXIT_CODE) 
     except Exception as e:
-        logger.critical(f"Fatal error in '{find_repos.__name__}': {str(e)}", exc_info=True)
-        click.echo(f"Fatal error in '{find_repos.__name__}': {str(e)}", err=True)
-        sys.exit(1) # General error
+        # Ensure the error is logged with full traceback
+        logger.critical(f"Fatal error in '{find_repos.name}': {str(e)}", exc_info=True)
+    finally:
+        # This block executes whether an exception occurred or not
+        # It's a good place for cleanup or final logging
+        logger.info(f"'{find_repos.name}' command complete.")
 
 @cli.command('scan')
 @click.option('--duration', default='7d', help='Total duration to run the scanner for (e.g., 7d, 12h, 30m). Default 7 days.')
 @click.option('--no-gaps-sleep', default='1h', help='Sleep interval when no gaps are found (e.g., 1h, 30m). Default 1 hour.')
 @click.option('--cycle-sleep', default='1m', help='Sleep interval between scan attempts/cycles. Default 1 minute.')
-@click.option('--db-url', envvar='DATABASE_URL', help='Database URL (can also be set via DATABASE_URL env var).')
-def scan(duration: str, no_gaps_sleep: str, cycle_sleep: str, db_url: Optional[str]):
+def scan(duration: str, no_gaps_sleep: str, cycle_sleep: str):
     """Continuously finds and scans unprocessed repository star ranges."""
     logger.info(f"Starting continuous scan process. Duration: {duration}, No Gaps Sleep: {no_gaps_sleep}, Cycle Sleep: {cycle_sleep}")
 
@@ -206,37 +226,34 @@ def scan(duration: str, no_gaps_sleep: str, cycle_sleep: str, db_url: Optional[s
     cycle_sleep_seconds = cycle_sleep_td.total_seconds()
 
     start_time = datetime.now(timezone.utc)
-    end_time = start_time + total_duration_td
+    end_time_overall = start_time + total_duration_td
     
-    # Ensure DATABASE_URL is available for AnalyzerService if not passed via option
-    if not db_url:
-        db_url_env = os.getenv("DATABASE_URL")
-        if not db_url_env:
-            logger.error("DATABASE_URL environment variable not set and --db-url option not provided.")
-            click.echo("Error: DATABASE_URL must be set or --db-url provided.", err=True)
-            sys.exit(1)
-        db_url = db_url_env
+    # DATABASE_URL will be read from .env by AnalyzerService's components (Config/GitHubClient)
+    # No need for explicit db_url handling here anymore.
 
     try:
-        analyzer = AnalyzerService(db_url=db_url)
+        # AnalyzerService will now rely on environment variable for DATABASE_URL.
+        # Its internal GitHubClient/Config will load .env and read os.getenv("DATABASE_URL").
+        analyzer = AnalyzerService()
         logger.info("AnalyzerService initialized for scan command.")
-    except ValueError as e: # Handles GitHub token not found from AnalyzerService -> GitHubClient init
+    except ValueError as e: # Handles GitHub token not found or DATABASE_URL not found from init path
         logger.critical(f"Failed to initialize AnalyzerService: {e}", exc_info=True)
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    while datetime.now(timezone.utc) < end_time:
+    while datetime.now(timezone.utc) < end_time_overall:
         logger.info("Starting new analysis and scan cycle...")
         cycle_start_time = datetime.now(timezone.utc)
+        remaining_duration_for_cycle_td = end_time_overall - cycle_start_time
+        logger.info(f"Overall scan end time: {end_time_overall.isoformat()}. Remaining duration for this cycle and its subprocesses: {remaining_duration_for_cycle_td}")
 
-        if analyzer.api_limit_reset_time and datetime.now(timezone.utc) < analyzer.api_limit_reset_time:
-            wait_time_seconds = (analyzer.api_limit_reset_time - datetime.now(timezone.utc)).total_seconds()
-            wait_time_seconds = max(1, wait_time_seconds) # Ensure at least 1s sleep
-            logger.info(f"API limit active. Reset at {analyzer.api_limit_reset_time}. Sleeping for {wait_time_seconds:.0f}s.")
-            time.sleep(wait_time_seconds)
-            continue # Re-check overall duration and API limit status
+        if remaining_duration_for_cycle_td.total_seconds() <= 0:
+            logger.info("Total scan duration reached before starting new cycle. Exiting.")
+            break
 
-        scan_attempted = analyzer.run_scanner_orchestration_cycle()
+        # Pass the overall end_time to the orchestration cycle
+        # The orchestration cycle will then pass it to the find-repos command
+        scan_attempted = analyzer.run_scanner_orchestration_cycle(end_time_iso=end_time_overall.isoformat())
 
         if analyzer.api_limit_reset_time and datetime.now(timezone.utc) < analyzer.api_limit_reset_time:
             # API limit was hit *during* the cycle (either proactively by analyzer or reported by scanner)
@@ -252,7 +269,7 @@ def scan(duration: str, no_gaps_sleep: str, cycle_sleep: str, db_url: Optional[s
             time.sleep(cycle_sleep_seconds)
         
         # Check duration limit again before starting next iteration
-        if datetime.now(timezone.utc) >= end_time:
+        if datetime.now(timezone.utc) >= end_time_overall:
             logger.info(f"Total scan duration of {total_duration_td} reached. Exiting scan loop.")
             break
         

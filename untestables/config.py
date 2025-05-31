@@ -8,7 +8,7 @@ class Config:
         self.abs_min_stars = int(os.getenv("ABS_MIN_STARS", "0"))
         self.abs_max_stars = int(os.getenv("ABS_MAX_STARS", "1000000"))
         self.default_chunk_size = int(os.getenv("DEFAULT_CHUNK_SIZE", "100"))
-        self.scanner_command = os.getenv("SCANNER_COMMAND", "poetry run untestables")
+        self.scanner_command = os.getenv("SCANNER_COMMAND", "poetry run untestables find-repos")
 
 def get_config():
     return Config()

@@ -12,7 +12,7 @@ from common.logging import LoggingManager
 from untestables.config import get_config
 from untestables.github.client import GitHubClient, APILimitError # Import new error and client for proactive check
 
-logger = LoggingManager.get_logger(__name__)
+logger = LoggingManager.get_logger('app.analyzer')
 
 # Special code to indicate scanner hit API limit
 SCANNER_APILIMIT_EXIT_CODE = 99
@@ -40,60 +40,91 @@ class AnalyzerService:
         """
         Retrieves a sorted list of distinct star counts that have been processed.
         """
-        # This is the function identified from Task 1
+        logger.debug("ENTERING get_processed_star_ranges")
         return self.github_client.get_processed_star_counts()
 
     def calculate_missing_ranges(self) -> List[Tuple[int, int]]:
         """
         Calculates the ranges of star counts that have not yet been scanned,
         respecting the absolute min/max stars and chunking large gaps.
+        This version uses an optimized gap calculation algorithm.
         """
+        logger.debug("ENTERING calculate_missing_ranges")
         processed_stars = self.get_processed_star_ranges()
-        logger.info(f"Processed star counts: {processed_stars}")
+        
+        if processed_stars:
+            logger.info(f"Retrieved {len(processed_stars)} processed star counts. Sample: {processed_stars[:10]}...")
+        else:
+            logger.info("Retrieved 0 processed star counts.")
+        logger.debug(f"Full list of processed star counts: {processed_stars}")
 
         desired_min = self.config.abs_min_stars
         desired_max = self.config.abs_max_stars
         chunk_size = self.config.default_chunk_size
 
-        gaps: List[Tuple[int, int]] = []
-        current_scan_point = desired_min
+        logger.debug(f"CALC_GAPS: desired_min={desired_min}, desired_max={desired_max}, chunk_size={chunk_size}")
 
-        # Add a sentinel value to processed_stars to handle the last gap easily
-        # Ensure processed_stars are within desired_min and desired_max and sorted
-        relevant_processed_stars = sorted(list(set(
-            [s for s in processed_stars if desired_min <= s <= desired_max] + [desired_max + 1]
-        )))
+        gaps: List[Tuple[int, int]] = []
         
-        if not relevant_processed_stars or relevant_processed_stars[0] > desired_max: # Handle empty or out of bound processed stars
-             # If no stars processed or all are beyond max, the whole range is a gap
+        if desired_min > desired_max:
+            logger.info("Desired min_stars is greater than max_stars. No gaps to process.")
+            return []
+
+        current_look_from = desired_min
+        logger.debug(f"CALC_GAPS: Initial current_look_from={current_look_from}")
+
+        if not processed_stars:
             if desired_min <= desired_max:
+                logger.debug(f"CALC_GAPS: No processed stars. Adding full range gap: ({desired_min}, {desired_max})")
                 gaps.append((desired_min, desired_max))
         else:
-            # Iterate through relevant processed stars to find gaps
-            last_processed_star = desired_min -1 # Ensure the first gap starts from desired_min
+            logger.debug(f"CALC_GAPS: Starting loop through {len(processed_stars)} processed_stars.")
+            for i, p_star in enumerate(processed_stars):
+                logger.debug(f"CALC_GAPS: Loop iter {i}, p_star={p_star}, current_look_from={current_look_from}")
+                if p_star < current_look_from:
+                    logger.debug(f"CALC_GAPS: p_star ({p_star}) < current_look_from ({current_look_from}). Skipping.")
+                    continue 
+                
+                if p_star > desired_max + 1 and current_look_from <= desired_max:
+                    logger.debug(f"CALC_GAPS: p_star ({p_star}) > desired_max+1 and current_look_from ({current_look_from}) <= desired_max. Adding gap ({current_look_from}, {desired_max}). Breaking.")
+                    gaps.append((current_look_from, desired_max))
+                    current_look_from = desired_max + 1 
+                    break
+                if current_look_from > desired_max:
+                    logger.debug(f"CALC_GAPS: current_look_from ({current_look_from}) > desired_max ({desired_max}). Breaking.")
+                    break
 
-            for star_val in relevant_processed_stars:
-                if star_val > last_processed_star + 1:
-                    # A gap exists from (last_processed_star + 1) to (star_val - 1)
-                    gap_start = last_processed_star + 1
-                    gap_end = min(star_val - 1, desired_max) # Ensure gap_end does not exceed desired_max
-                    
-                    if gap_start <= gap_end: # Ensure valid gap
-                         gaps.append((gap_start, gap_end))
-                last_processed_star = star_val
-                if last_processed_star >= desired_max:
-                    break # Stop if we've processed up to or beyond desired_max
-        
+                if p_star > current_look_from:
+                    gap_end = min(p_star - 1, desired_max)
+                    logger.debug(f"CALC_GAPS: p_star ({p_star}) > current_look_from ({current_look_from}). Potential gap_end={gap_end}")
+                    if current_look_from <= gap_end:
+                        logger.debug(f"CALC_GAPS: Adding gap: ({current_look_from}, {gap_end})")
+                        gaps.append((current_look_from, gap_end))
+                
+                current_look_from = p_star + 1
+                logger.debug(f"CALC_GAPS: Updated current_look_from={current_look_from}")
+
+            logger.debug(f"CALC_GAPS: Loop finished. Final current_look_from={current_look_from}")
+            if current_look_from <= desired_max:
+                logger.debug(f"CALC_GAPS: Adding final gap: ({current_look_from}, {desired_max})")
+                gaps.append((current_look_from, desired_max))
+
         # Chunk the identified gaps
         chunked_gaps: List[Tuple[int, int]] = []
+        logger.debug(f"CALC_GAPS: Starting chunking for {len(gaps)} raw gaps: {gaps[:5]}...")
         for start, end in gaps:
             current = start
             while current <= end:
                 chunk_end = min(current + chunk_size - 1, end)
                 chunked_gaps.append((current, chunk_end))
                 current = chunk_end + 1
+        logger.debug(f"CALC_GAPS: Chunking finished.")
         
-        logger.info(f"Identified {len(chunked_gaps)} chunked gap(s): {chunked_gaps}")
+        if chunked_gaps:
+            logger.info(f"Identified {len(chunked_gaps)} chunked gap(s). First few: {chunked_gaps[:5]}")
+        else:
+            logger.info("No chunked gaps identified.")
+        logger.debug(f"Full list of chunked gaps: {chunked_gaps}")
         return chunked_gaps
 
     def select_next_gap(self) -> Optional[Tuple[int, int]]:
@@ -105,6 +136,7 @@ class AnalyzerService:
             Optional[Tuple[int, int]]: The (min_stars, max_stars) for the next scan,
                                        or None if no gaps are available.
         """
+        logger.debug("ENTERING select_next_gap")
         chunked_gaps = self.calculate_missing_ranges()
 
         if not chunked_gaps:
@@ -117,19 +149,23 @@ class AnalyzerService:
         logger.info(f"Selected next gap to process: {next_gap}")
         return next_gap
 
-    def construct_scanner_command(self, min_stars: int, max_stars: int) -> str:
+    def construct_scanner_command(self, min_stars: int, max_stars: int, end_time_iso: Optional[str] = None) -> str:
         """
-        Constructs the scanner command string with the given min and max stars.
+        Constructs the scanner command string with the given min and max stars,
+        and an optional end time.
 
         Args:
             min_stars (int): The minimum number of stars for the scan.
             max_stars (int): The maximum number of of stars for the scan.
+            end_time_iso (Optional[str]): ISO format timestamp for when the scan should stop.
 
         Returns:
             str: The fully constructed scanner command string.
         """
         base_command = self.config.scanner_command
         command = f"{base_command} --min-stars {min_stars} --max-stars {max_stars}"
+        if end_time_iso:
+            command += f" --end-time {shlex.quote(end_time_iso)}" # Ensure end_time_iso is quoted if it contains spaces or special chars
         logger.info(f"Constructed scanner command: {command}")
         return command
 
@@ -182,38 +218,42 @@ class AnalyzerService:
         logger.debug("Current partial completion signal detection is not implemented beyond exit code analysis.")
         # The actual adjustment of gap understanding would happen elsewhere, based on this method's findings.
 
-    def run_scanner_orchestration_cycle(self) -> bool:
+    def run_scanner_orchestration_cycle(self, end_time_iso: Optional[str] = None) -> bool:
         """
         Runs one full cycle of the scanner orchestration:
         Checks API limits, selects gap, executes scanner, handles result.
+        Passes end_time_iso to the scanner command.
         Returns True if a scan was attempted, False if no gaps or if API limit active.
         """
+        logger.debug(f"ENTERING run_scanner_orchestration_cycle with end_time_iso: {end_time_iso}") # Entry log for the orchestrator
         logger.info("Starting new scanner orchestration cycle...")
 
         # Proactive API limit check
         if self.api_limit_reset_time and datetime.now(timezone.utc) < self.api_limit_reset_time:
             logger.info(f"Proactive check: API rate limit is active. Waiting until {self.api_limit_reset_time}. Skipping cycle.")
-            return False # Indicate cycle skipped due to API limit
+            logger.debug("EXITING run_scanner_orchestration_cycle due to known API limit reset time.")
+            return False 
         else:
-            self.api_limit_reset_time = None # Clear previous limit if time has passed
+            if self.api_limit_reset_time: # Log if it was set but now passed
+                logger.debug("Previously set api_limit_reset_time has passed. Clearing it.")
+            self.api_limit_reset_time = None 
 
         try:
-            # It's better to check the actual API if we are not sure about self.api_limit_reset_time
-            # This check is more for when the scanner itself reports a limit.
-            # A proactive check against current limits from GitHubClient could also be added here.
+            logger.debug("Attempting proactive GitHub API rate limit check...")
             limits = self.github_client.get_rate_limit_info()
-            # Let's be conservative: check search API, as scanner (main CLI) uses it.
             search_limits = limits.get('search', {})
-            if search_limits.get('remaining', 1) == 0: # If remaining is 0
+            logger.debug(f"Proactive check: Search limits - Remaining: {search_limits.get('remaining')}, Reset: {search_limits.get('reset_time_datetime')}")
+            if search_limits.get('remaining', 1) == 0: 
                 reset_dt = search_limits.get('reset_time_datetime')
                 if reset_dt and datetime.now(timezone.utc) < reset_dt:
                     self.api_limit_reset_time = reset_dt
                     logger.warning(f"Proactive check: GitHub search API rate limit is 0. Reset at {reset_dt}. Skipping cycle.")
+                    logger.debug("EXITING run_scanner_orchestration_cycle due to fetched zero search API limit.")
                     return False
+            logger.debug("Proactive GitHub API rate limit check passed (or no immediate restriction).")
         except Exception as e:
             logger.error(f"Failed to check GitHub rate limits before scan: {e}", exc_info=True)
-            # Decide: proceed with scan or not? For now, let's proceed cautiously or return False.
-            # Returning False to be safe, will cause a wait in the main loop.
+            logger.debug("EXITING run_scanner_orchestration_cycle due to exception during rate limit check.")
             return False
 
         selected_gap = self.select_next_gap()
@@ -225,7 +265,7 @@ class AnalyzerService:
         min_stars, max_stars = selected_gap
         logger.info(f"Processing selected gap: {min_stars}-{max_stars}")
         
-        command_to_run = self.construct_scanner_command(min_stars, max_stars)
+        command_to_run = self.construct_scanner_command(min_stars, max_stars, end_time_iso=end_time_iso)
         
         exit_code, stdout_str, stderr_str = self.execute_scanner_command_with_output(command_to_run)
 
