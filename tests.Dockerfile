@@ -23,26 +23,16 @@ RUN pipx install poetry && \
     poetry install --no-interaction --no-ansi --no-root
 
 # Copying the rest of the project
-COPY app .
+COPY --chown=app:app . .
 
-# Stage 2: Runtime environment
-FROM python:3.11-slim-bookworm
-
-RUN addgroup --system app && adduser --system --ingroup app app
-
-# Set PATH for Poetry's virtual environment
 ENV PATH="/home/app/.venv/bin:${PATH}"
 ENV PYTHONPATH="/home/app/.venv/lib/python3.11/site-packages/"
 
+ENV DATABASE_URL="sqlite:///:memory:"
+ENV GITHUB_TOKEN="dummy_token"
+ENV ABS_MIN_STARS=10
+ENV ABS_MAX_STARS=1000000
+ENV DEFAULT_CHUNK_SIZE=100
 
-# Update packages
-RUN apt-get update && apt-get install -y --no-install-recommends
-
-# Copy installed dependencies from builder stage
-COPY --from=builder /home/app /home/app
-
-WORKDIR /home/app
-
-ENTRYPOINT ["untestables"]
-CMD ["--help"]
-
+ENTRYPOINT ["poetry", "run", "tests"]
+CMD [""]
