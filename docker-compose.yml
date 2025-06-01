@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  scanner:
+    build: .
+    # Example command, adjust as per your CLI. This will use the CMD from Dockerfile if not specified.
+    # command: ["python", "untestables/cli.py", "scan", "--all"]
+
+  analyzer:
+    build: .
+    # Example command, adjust as per your CLI
+    command: ["python", "untestables/cli.py", "analyze-gaps"] # Example: might take --min-stars 1000
+    # If the analyzer needs to trigger the scanner service directly, you might use Docker Compose's `depends_on`
+    # or orchestrate them via an external script that runs `docker-compose run scanner ...` after `docker-compose run analyzer`.
+    # For simplicity, we assume they are run as needed or the analyzer influences a shared state (like a DB)
+    # that the scanner later reads when it's run.

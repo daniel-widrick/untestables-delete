@@ -3,23 +3,40 @@ import os
 import time
 import fnmatch
 from functools import wraps
-from typing import Optional, Callable, Any
-from github import Github
-from github.GithubException import GithubException, RateLimitExceededException
+from typing import Optional, Callable, Any, List
+from github import Github, Repository, RateLimitExceededException, GithubException, UnknownObjectException
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, desc, func, distinct
+from sqlalchemy.orm import sessionmaker, Session
 from common.logging import LoggingManager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-# Set up logging for this module via LoggingManager
+from .models import Base, Repository as DBRepository
+
+# Configure logger for this module using the application's logging setup
+# This will be a child of the main 'app' logger if 'app' is configured first.
 logger = LoggingManager.get_logger('app.github_client')
 
 
 class RateLimitExceeded(Exception):
     """Exception raised when the GitHub API rate limit is exceeded."""
     pass
+
+
+class APILimitError(Exception):
+    """Custom exception for GitHub API rate limit errors."""
+    def __init__(self, message: str, reset_time_unix: Optional[int] = None, reset_time_datetime: Optional[datetime] = None):
+        super().__init__(message)
+        self.reset_time_unix = reset_time_unix
+        if reset_time_datetime and reset_time_datetime.tzinfo is None:
+            self.reset_time_datetime = reset_time_datetime.replace(tzinfo=timezone.utc)
+        else:
+            self.reset_time_datetime = reset_time_datetime
+        
+        if reset_time_unix and not reset_time_datetime:
+            self.reset_time_datetime = datetime.fromtimestamp(reset_time_unix, tz=timezone.utc)
+        elif reset_time_datetime and not reset_time_unix:
+            self.reset_time_unix = int(reset_time_datetime.timestamp())
 
 
 def retry_on_failure(max_retries: int = 3, delay: float = 1.0, backoff: float = 2.0):
@@ -81,28 +98,6 @@ def retry_on_failure(max_retries: int = 3, delay: float = 1.0, backoff: float = 
     return decorator
 
 
-Base = declarative_base()
-
-
-class Repository(Base):
-    __tablename__ = 'repositories'
-    id = Column(Integer, primary_key=True)
-    name = Column(String(255), nullable=False)  # Repository name (e.g., "my-project")
-    description = Column(Text, nullable=True)
-    star_count = Column(Integer, nullable=False)
-    url = Column(String(255), nullable=False)  # HTML URL (e.g., "https://github.com/owner/my-project")
-    # Consider adding full_name (e.g., "owner/my-project") if you need to ensure uniqueness across owners
-    # and for easier matching if get_recently_scanned_repos returns full_name.
-    # full_name = Column(String(511), nullable=False, unique=True) # Example
-    missing_test_directories = Column(Boolean, nullable=False)
-    missing_test_files = Column(Boolean, nullable=False)
-    missing_test_config_files = Column(Boolean, nullable=False)
-    missing_cicd_configs = Column(Boolean, nullable=False)
-    missing_readme_mentions = Column(Boolean, nullable=False)
-    last_scanned_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    language = Column(String(50), nullable=True)
-
-
 class GitHubClient:
     """Client for interacting with the GitHub API."""
 
@@ -122,7 +117,7 @@ class GitHubClient:
             raise ValueError("GitHub token is required. Set GITHUB_TOKEN environment variable or pass token directly.")
 
         logger.info("Initializing GitHub client")
-        self.client = Github(self.token, per_page=100)  # PyGithub client, explicitly set per_page
+        self.gh = Github(self.token, per_page=100)  # PyGithub client, explicitly set per_page
         self.db_url = db_url or os.getenv("DATABASE_URL")
         if not self.db_url:
             logger.error("Database URL not found in environment variables")
@@ -142,7 +137,7 @@ class GitHubClient:
             dict: Rate limit information including remaining requests and reset time.
         """
         logger.debug("Fetching GitHub API rate limit")
-        rate_limit = self.client.get_rate_limit()  # PyGithub's rate limit object
+        rate_limit = self.gh.get_rate_limit()  # PyGithub's rate limit object
         info = {
             "remaining": rate_limit.core.remaining,
             "limit": rate_limit.core.limit,
@@ -160,7 +155,7 @@ class GitHubClient:
         """
         logger.info("Testing GitHub API connection")
         try:
-            self.client.get_user()  # A simple call to verify authentication and connection
+            self.gh.get_user()  # A simple call to verify authentication and connection
             logger.info("GitHub API connection test successful")
             return True
         except GithubException as e:
@@ -188,7 +183,6 @@ class GitHubClient:
             logger.warning(f"Rate limit is low: {info['remaining']} remaining, resets at {reset_time_str}")
         return info
 
-# In client.py (client_v3.py)
     @retry_on_failure()
     def get_paginated_results(self, query: str, per_page: int = 30) -> list:
         logger.info(f"Executing search query: {query}. PyGithub client default per_page is used.")
@@ -199,7 +193,7 @@ class GitHubClient:
         try:
             # The per_page argument to search_repositories can sometimes be finicky or ignored
             # if the client itself has a per_page default. We set it on client init.
-            paginated_list_object = self.client.search_repositories(query=query)
+            paginated_list_object = self.gh.search_repositories(query=query)
             logger.debug(f"Obtained PaginatedList for query: {query}")
 
             # Iterate directly over the PaginatedList. PyGithub handles pagination.
@@ -224,49 +218,46 @@ class GitHubClient:
 
 
     @retry_on_failure()
-    def filter_repositories(self, language: str = "Python", min_stars: int = 0, max_stars: int = 1000,
-                            keywords: list = None) -> list:
-        """Filter repositories based on specified criteria.
-        Args:
-            language: Primary language of the repositories (default: 'python').
-            min_stars: Minimum number of stars (default: 0).
-            max_stars: Maximum number of stars (default: 1000).
-            keywords: List of keywords to search in repository descriptions (default: None).
-        Returns:
-            list: A list of filtered repositories.
-        """
+    def filter_repositories(self, language: str = "Python", min_stars: int = 0, max_stars: int = None, # max_stars can be None
+                            keywords: list = None, max_results: int = 1000) -> List[Repository.Repository]: # Type hint is github.Repository.Repository
+        """Filter repositories based on specified criteria using paginated search."""
         query_parts = []
-        if language:  # Ensure language is only added if provided
+        if language:
             query_parts.append(f"language:{language}")
 
-        # GitHub search for stars: "stars:min..max", "stars:>=min", "stars:<=max"
-        if min_stars == 0 and max_stars is None:  # No star filter
-            pass
-        elif max_stars is None:  # Only min_stars
-            query_parts.append(f"stars:>={min_stars}")
-        elif min_stars == 0:  # Only max_stars (effectively 0..max_stars)
-            query_parts.append(f"stars:0..{max_stars}")
-        else:  # Both min and max stars
+        if max_stars is None:
+            if min_stars == 0: # No star filter effectively
+                pass # Or some very large upper bound if API requires, but usually not specifying is fine
+            else:
+                query_parts.append(f"stars:>={min_stars}")
+        elif min_stars == 0 and max_stars == 0: # Special case: 0 stars only
+             query_parts.append(f"stars:0")
+        else: # min_stars, max_stars, or both are set (and max_stars is not None)
             query_parts.append(f"stars:{min_stars}..{max_stars}")
 
         if keywords:
-            query_parts.extend([f'"{keyword}"' for keyword in keywords])  # Quotes for exact phrase
+            query_parts.extend([f'"{keyword}"' for keyword in keywords])
+        
         query = " ".join(query_parts)
-        logger.info(f"Filtering repositories with query: {query}")
-        # Let's use a higher per_page value for search, default 100 for search API is good.
-        return self.get_paginated_results(query, per_page=100)
+        logger.info(f"Constructed repository search query: {query}")
+        
+        # Use the paginated search method, removing end_time_iso
+        return self.search_repositories_paginated(query=query, max_results=max_results)
 
     @retry_on_failure()
     def get_repository_metadata(self, repo_name: str, language: str = "python") -> dict:
         """Retrieve metadata for a given repository, including language."""
         logger.info(f"Fetching metadata for repository: {repo_name}")
-        repo = self.client.get_repo(repo_name)  # repo_name should be "owner/repo"
+        repo = self.gh.get_repo(repo_name)  # repo_name should be "owner/repo"
         metadata = {
             "name": repo.name,  # Just the repo name
             "description": repo.description,
             "star_count": repo.stargazers_count,
             "url": repo.html_url,  # Full HTML URL
-            "language": getattr(repo, "language", language) or language  # Primary language
+            "language": getattr(repo, "language", language) or language,  # Primary language
+            "last_push_time": repo.pushed_at,
+            "last_metadata_update_time": repo.updated_at,
+            "creation_time": repo.created_at
             # "full_name": repo.full_name # "owner/repo" - good to store if not using URL as unique ID
         }
         logger.debug(f"Repository metadata: {metadata}")
@@ -296,11 +287,14 @@ class GitHubClient:
                 "missing_test_config_files": missing.get("test_config_files", False),
                 "missing_cicd_configs": missing.get("cicd_configs", False),
                 "missing_readme_mentions": missing.get("readme_mentions", False),
-                "last_scanned_at": datetime.utcnow()
+                "last_scanned_at": datetime.utcnow(),
+                "last_push_time": metadata.get("last_push_time"),
+                "last_metadata_update_time": metadata.get("last_metadata_update_time"),
+                "creation_time": metadata.get("creation_time")
             }
 
             # Check if repo already exists by URL (which should be unique)
-            existing_repo = session.query(Repository).filter_by(url=metadata["url"]).first()
+            existing_repo = session.query(DBRepository).filter_by(url=metadata["url"]).first()
             if existing_repo:
                 logger.debug(f"Repository {metadata['url']} already exists. Updating.")
                 for key, value in repo_data_for_model.items():
@@ -308,7 +302,7 @@ class GitHubClient:
                 repo_to_store = existing_repo
             else:
                 logger.debug(f"New repository: {metadata['url']}. Creating.")
-                repo_to_store = Repository(**repo_data_for_model)
+                repo_to_store = DBRepository(**repo_data_for_model)
                 session.add(repo_to_store)
 
             session.commit()
@@ -324,7 +318,7 @@ class GitHubClient:
     def check_test_directories(self, repo_name: str) -> bool:  # repo_name is "owner/repo"
         """Check for the existence of common unit test directories in a given repository."""
         logger.info(f"Checking test directories for repository: {repo_name}")
-        repo = self.client.get_repo(repo_name)
+        repo = self.gh.get_repo(repo_name)
         test_dirs = ["tests", "test", "testfiles", "unittests"]  # Added more common names
         # Common top-level or src-level test directories
         paths_to_check = [""]  # Root
@@ -357,7 +351,7 @@ class GitHubClient:
     def check_test_files(self, repo_name: str) -> bool:  # repo_name is "owner/repo"
         """Check for common unit test files in a repository."""
         logger.info(f"Checking test files for repository: {repo_name}")
-        repo = self.client.get_repo(repo_name)
+        repo = self.gh.get_repo(repo_name)
         # Patterns for fnmatch
         test_file_patterns = ["test_*.py", "*_test.py", "tests.py", "test.py"]
         common_test_paths = ["", "tests", "test", "src", "src/tests", "src/test"]
@@ -383,7 +377,7 @@ class GitHubClient:
     def check_test_config_files(self, repo_name: str) -> bool:  # repo_name is "owner/repo"
         """Scan for configuration files related to testing in the root directory."""
         logger.info(f"Checking test config files for repository: {repo_name}")
-        repo = self.client.get_repo(repo_name)
+        repo = self.gh.get_repo(repo_name)
         config_files = ["pytest.ini", "tox.ini", "nose.cfg", ".coveragerc", "setup.cfg",
                         "pyproject.toml"]  # setup.cfg/pyproject.toml can contain pytest/coverage config
         try:
@@ -403,7 +397,7 @@ class GitHubClient:
     def check_readme_for_test_frameworks(self, repo_name: str) -> bool:  # repo_name is "owner/repo"
         """Search the repository README for mentions of testing frameworks."""
         logger.info(f"Checking README for test frameworks in repository: {repo_name}")
-        repo = self.client.get_repo(repo_name)
+        repo = self.gh.get_repo(repo_name)
         try:
             readme = repo.get_readme()
             readme_content = readme.decoded_content.decode("utf-8", errors="ignore").lower()  # Added errors='ignore'
@@ -425,7 +419,7 @@ class GitHubClient:
     def check_cicd_configs(self, repo_name: str) -> bool:  # repo_name is "owner/repo"
         """Detect CI/CD configurations related to testing in the repository."""
         logger.info(f"Checking CI/CD configs for repository: {repo_name}")
-        repo = self.client.get_repo(repo_name)
+        repo = self.gh.get_repo(repo_name)
         # Patterns for CI/CD config files/directories
         # GitHub Actions workflows are in .github/workflows/ and can be any .yml or .yaml file
         # For others, it's usually a specific file name at the root.
@@ -498,7 +492,7 @@ class GitHubClient:
 
             # Let's assume the repo's URL is the unique identifier here.
             # We'd need the URL. If we only have "owner/repo", we can construct a potential URL.
-            # github_repo_obj = self.client.get_repo(repo_name) # API call
+            # github_repo_obj = self.gh.get_repo(repo_name) # API call
             # repo_url = github_repo_obj.html_url
 
             # Alternative: The calling script should manage this, passing the DB ID or unique URL.
@@ -531,8 +525,8 @@ class GitHubClient:
             logger.warning(
                 f"Querying repository in DB by simple name '{repo_name_only}' for update. This might be ambiguous if multiple owners have repos with this name. Consider using URL or DB ID for updates.")
 
-            repo_db_entry = session.query(Repository).filter(Repository.name == repo_name_only,
-                                                             Repository.url.like(f"%/{repo_name}")).first()
+            repo_db_entry = session.query(DBRepository).filter(DBRepository.name == repo_name_only,
+                                                             DBRepository.url.like(f"%/{repo_name}")).first()
 
             if not repo_db_entry:
                 logger.warning(
@@ -580,13 +574,13 @@ class GitHubClient:
         try:
             # Returns a list of URLs for the calling script to use for exclusion.
             # Using URL as it's more unique than just 'name'.
-            query = session.query(Repository.url)
+            query = session.query(DBRepository.url)
 
             if days is not None:
                 # This is the behavior if `days` is specified by the calling script (e.g., untestables)
                 # It makes "recently scanned" mean scanned in the last X days.
                 cutoff_date = datetime.utcnow() - timedelta(days=days)
-                query = query.filter(Repository.last_scanned_at >= cutoff_date)
+                query = query.filter(DBRepository.last_scanned_at >= cutoff_date)
             # If 'days' is None (as in the original log), all repo URLs from the DB are returned.
             # The calling script then uses this list to skip processing.
 
@@ -598,4 +592,112 @@ class GitHubClient:
             return []  # Return empty list on error
         finally:
             session.close()
+
+    def get_processed_star_counts(self) -> list[int]:
+        """Get a sorted list of distinct star counts from successfully scanned repositories."""
+        logger.info("Fetching processed star counts from the database.")
+        session = self.Session()
+        try:
+            query = session.query(DBRepository.star_count).distinct().order_by(DBRepository.star_count)
+            logger.info(f"Constructed query: {query}") # Using f-string for consistency
+            
+            logger.debug("Attempting to execute query.all() for processed star counts...")
+            results = query.all() # This is the suspected hanging point
+            logger.debug(f"query.all() executed. Number of results (tuples): {len(results)}")
+            
+            star_counts = [result[0] for result in results]
+            logger.debug(f"Found {len(star_counts)} distinct processed star counts after extracting from tuples.")
+            return star_counts
+        except Exception as e:
+            logger.error(f"Error fetching processed star counts: {e}", exc_info=True)
+            return [] 
+        finally:
+            logger.debug("Closing session in get_processed_star_counts.")
+            session.close()
+
+    def get_rate_limit_info(self) -> dict:
+        """Gets current rate limit status for core and search."""
+        try:
+            rate_limits = self.gh.get_rate_limit()
+            core_limits = rate_limits.core
+            search_limits = rate_limits.search
+            
+            # Ensure datetimes are timezone-aware (UTC)
+            core_reset_dt = core_limits.reset.replace(tzinfo=timezone.utc) if core_limits.reset.tzinfo is None else core_limits.reset
+            search_reset_dt = search_limits.reset.replace(tzinfo=timezone.utc) if search_limits.reset.tzinfo is None else search_limits.reset
+
+            return {
+                "core": {
+                    "limit": core_limits.limit,
+                    "remaining": core_limits.remaining,
+                    "reset_time_unix": int(core_reset_dt.timestamp()),
+                    "reset_time_datetime": core_reset_dt
+                },
+                "search": {
+                    "limit": search_limits.limit,
+                    "remaining": search_limits.remaining,
+                    "reset_time_unix": int(search_reset_dt.timestamp()),
+                    "reset_time_datetime": search_reset_dt
+                }
+            }
+        except Exception as e:
+            logger.error(f"Could not retrieve rate limit: {e}", exc_info=True)
+            return {
+                "core": {"limit": 0, "remaining": 0, "reset_time_unix": None, "reset_time_datetime": None},
+                "search": {"limit": 0, "remaining": 0, "reset_time_unix": None, "reset_time_datetime": None}
+            }
+
+    def search_repositories_paginated(self, query: str, max_results: int = 1000) -> List[Repository.Repository]: # Type hint is github.Repository.Repository
+        """
+        Searches repositories using paginated results from PyGithub, respecting GitHub's result cap (1000).
+        Args:
+            query (str): The GitHub search query string.
+            max_results (int): The maximum number of repositories to return.
+                               Capped at 1000 due to GitHub API limitations for search.
+        Returns:
+            List[Repository.Repository]: A list of repository objects.
+        """
+        logger.info(f"Executing paginated repository search: '{query}'. Max results: {max_results}.") # Removed End time from log
+        
+        effective_max_results = min(max_results, 1000)
+        if max_results > 1000:
+            logger.warning(f"Requested max_results {max_results} exceeds GitHub API limit of 1000. Will fetch at most 1000.")
+
+        results: List[Repository.Repository] = []
+        # Removed end_time_dt parsing and related logic
+
+        try:
+            paginated_list = self.gh.search_repositories(query=query)
+            logger.debug(f"PyGithub PaginatedList obtained for query: {query}")
+
+            for i, repo in enumerate(paginated_list):
+                # Removed time check: if end_time_dt and datetime.now(timezone.utc) >= end_time_dt:
+
+                results.append(repo)
+                if len(results) >= effective_max_results:
+                    logger.info(f"Reached effective_max_results ({effective_max_results}). Stopping repository collection.")
+                    break
+                
+                if (i + 1) % 50 == 0:
+                    logger.debug(f"Collected {len(results)} repositories so far for query '{query}'...")
+            
+            logger.info(f"Finished collecting repositories for query '{query}'. Total collected: {len(results)}.")
+
+        except RateLimitExceededException as e: # PyGithub's exception
+            # This exception should ideally be caught by the @retry_on_failure decorator.
+            # If it reaches here, it means retries failed or decorator isn't applied to a calling method.
+            rl = self.gh.get_rate_limit().search # Check search-specific limit
+            reset_time = rl.reset.replace(tzinfo=timezone.utc)
+            logger.error(f"GitHub Search API rate limit exceeded during search: '{query}'. Limit will reset at {reset_time}. Error: {e}")
+            # Raise the custom APILimitError so AnalyzerService can see it
+            raise APILimitError(message=f"Search API rate limit hit: {e}", reset_time_datetime=reset_time) from e
+        except GithubException as e:
+            logger.error(f"An unexpected GitHub API error occurred during search '{query}': {e}", exc_info=True)
+            # Depending on policy, either raise a custom error or the original GithubException
+            raise # Re-raise the original error to be handled by caller or retry decorator
+        except Exception as e:
+            logger.error(f"A non-GitHub error occurred during repository search '{query}': {e}", exc_info=True)
+            raise # Re-raise
+            
+        return results
 

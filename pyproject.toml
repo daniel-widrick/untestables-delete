@@ -24,7 +24,8 @@ pytest-cov = "^4.1.0"
 
 [tool.poetry.scripts]
 test = "pytest:main"
-untestables = "untestables.cli:main"
+tests = "pytest:main"
+untestables = "untestables.cli:cli"
 
 [build-system]
 requires = ["poetry-core"]
