@@ -2,8 +2,8 @@ from click.testing import CliRunner
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
 import pytest
-from untestables.cli import main
-from untestables.github.client import Repository
+from untestables.cli import find_repos
+from untestables.github.models import Repository as DBRepository
 from sqlalchemy.orm import Session
 
 @pytest.fixture
@@ -54,28 +54,28 @@ def mock_env_vars():
 def test_cli_default_values(mock_github_client, mock_env_vars):
     """Test CLI with default values."""
     runner = CliRunner()
-    result = runner.invoke(main)
+    result = runner.invoke(find_repos)
     assert result.exit_code == 0
     assert "Starting repository search with 5 to 1000 stars" in result.output
 
 def test_cli_rescan_days(mock_github_client, mock_env_vars):
     """Test CLI with rescan days option."""
     runner = CliRunner()
-    result = runner.invoke(main, ['--rescan-days', '30'])
+    result = runner.invoke(find_repos, ['--rescan-days', '30'])
     assert result.exit_code == 0
     assert "Will re-scan repositories last scanned more than 30 days ago" in result.output
 
 def test_cli_force_rescan(mock_github_client, mock_env_vars):
     """Test CLI with force rescan option."""
     runner = CliRunner()
-    result = runner.invoke(main, ['--force-rescan'])
+    result = runner.invoke(find_repos, ['--force-rescan'])
     assert result.exit_code == 0
     assert "Force re-scan enabled" in result.output
 
 def test_cli_combined_options(mock_github_client, mock_env_vars):
     """Test CLI with multiple options."""
     runner = CliRunner()
-    result = runner.invoke(main, [
+    result = runner.invoke(find_repos, [
         '--min-stars', '10',
         '--max-stars', '50',
         '--rescan-days', '7',
@@ -89,7 +89,7 @@ def test_cli_combined_options(mock_github_client, mock_env_vars):
 def test_cli_custom_values(mock_github_client, mock_env_vars):
     """Test CLI with custom star values."""
     runner = CliRunner()
-    result = runner.invoke(main, [
+    result = runner.invoke(find_repos, [
         '--min-stars', '10',
         '--max-stars', '500',
     ])

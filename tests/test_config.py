@@ -25,11 +25,11 @@ def test_config_default_values():
     if "DEFAULT_CHUNK_SIZE" in os.environ: del os.environ["DEFAULT_CHUNK_SIZE"]
     if "SCANNER_COMMAND" in os.environ: del os.environ["SCANNER_COMMAND"]
 
-    config = get_config()
+    config = get_config(load_env=False)
     assert config.abs_min_stars == 0  # Default from config.py
     assert config.abs_max_stars == 1000000  # Default from config.py
     assert config.default_chunk_size == 100  # Default from config.py
-    assert config.scanner_command == "poetry run untestables"  # Default from config.py
+    assert config.scanner_command == "poetry run untestables find-repos"  # Default from config.py
 
 @patch.dict(os.environ, {}, clear=True)
 def test_config_class_instantiation():
@@ -39,8 +39,8 @@ def test_config_class_instantiation():
     if "DEFAULT_CHUNK_SIZE" in os.environ: del os.environ["DEFAULT_CHUNK_SIZE"]
     if "SCANNER_COMMAND" in os.environ: del os.environ["SCANNER_COMMAND"]
 
-    config = Config() # Instantiating Config directly will load .env or defaults
+    config = Config(load_env=False) # Instantiating Config directly will load .env or defaults
     assert config.abs_min_stars == 0 # Default from os.getenv in Config.__init__
     assert config.abs_max_stars == 1000000 # Default from os.getenv in Config.__init__
     assert config.default_chunk_size == 100 # Default from os.getenv in Config.__init__
-    assert config.scanner_command == "poetry run untestables" # Default from os.getenv in Config.__init__ 
+    assert config.scanner_command == "poetry run untestables find-repos" # Default from os.getenv in Config.__init__

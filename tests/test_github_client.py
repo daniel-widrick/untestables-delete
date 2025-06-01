@@ -2,7 +2,8 @@
 import os
 import pytest
 from unittest.mock import patch, MagicMock, Mock
-from untestables.github.client import GitHubClient, RateLimitExceeded, Repository, retry_on_failure
+from untestables.github.client import GitHubClient, RateLimitExceeded, retry_on_failure
+from untestables.github.models import Repository as DBRepository
 from sqlalchemy.orm import Session
 from github.GithubException import GithubException, RateLimitExceededException
 import time
@@ -36,7 +37,7 @@ def mock_paginated_list_class():
             if 0 <= page_num < len(self._items_by_page):
                 return self._items_by_page[page_num]
             return [] # Return empty list if page_num is out of bounds
-        
+
         def __iter__(self):
             # Make the mock iterable if the client code iterates directly
             all_items = []
@@ -83,14 +84,14 @@ def test_get_rate_limit(mock_github):
 def test_test_connection_success(mock_github):
     """Test successful connection test."""
     mock_github.return_value.get_user.return_value = MagicMock()
-    
+
     client = GitHubClient(token="test_token")
     assert client.test_connection() is True
 
 def test_test_connection_failure(mock_github):
     """Test failed connection test."""
     mock_github.return_value.get_user.side_effect = GithubException(401, "Bad credentials")
-    
+
     client = GitHubClient(token="test_token")
     assert client.test_connection() is False
 
@@ -100,7 +101,7 @@ def test_check_rate_limit_exceeded(mock_github):
     mock_rate_limit_core.remaining = 0
     mock_rate_limit_core.limit = 5000
     mock_rate_limit_core.reset = datetime.utcnow() + timedelta(hours=1) # Use datetime
-    
+
     mock_rate_limit_response = MagicMock()
     mock_rate_limit_response.core = mock_rate_limit_core
     mock_github.return_value.get_rate_limit.return_value = mock_rate_limit_response
@@ -212,7 +213,7 @@ def test_get_paginated_results_hits_api_limit(mock_github, mock_paginated_list_c
             break # Stop if no items were added to the page and we have enough total
         if len(pages_data) > (simulated_total_available_items // items_per_page_for_test) + 5: # Safety break for mock setup
             break
-            
+
     mock_response_list = mock_paginated_list_class(
         items_by_page=pages_data, # List of lists of items
         total_count=simulated_total_available_items # Total items mock GH would say it has
@@ -248,7 +249,7 @@ def test_filter_repositories_no_matches(mock_github, mock_paginated_list_class):
     # Simulate no results from search_repositories
     mock_empty_response_list = mock_paginated_list_class(items_by_page=[], total_count=0)
     mock_github.return_value.search_repositories.return_value = mock_empty_response_list
-    
+
     client = GitHubClient(token="test_token", db_url="sqlite:///:memory:")
     expected_per_page_for_filter = 100
     results = client.filter_repositories(language="python", min_stars=1000, max_stars=2000)
@@ -310,7 +311,7 @@ def test_store_repository_metadata(mock_github):
     # 1. Test creation
     client.store_repository_metadata(metadata1, missing)
     session = Session(bind=client.engine)
-    repo1 = session.query(Repository).filter_by(url=metadata1["url"]).first()
+    repo1 = session.query(DBRepository).filter_by(url=metadata1["url"]).first()
     assert repo1 is not None
     assert repo1.description == "A test repository"
     assert repo1.star_count == 100
@@ -345,9 +346,9 @@ def test_store_repository_metadata(mock_github):
         "cicd_configs": False, "readme_mentions": False
     }
     client.store_repository_metadata(metadata2, updated_missing)
-    
+
     session = Session(bind=client.engine)
-    updated_repo = session.query(Repository).filter_by(url=metadata1["url"]).first()
+    updated_repo = session.query(DBRepository).filter_by(url=metadata1["url"]).first()
     assert updated_repo is not None
     assert updated_repo.description == "An updated test repository"
     assert updated_repo.star_count == 150
@@ -361,7 +362,7 @@ def test_store_repository_metadata(mock_github):
     assert updated_repo.last_scanned_at > initial_last_scanned_at
 
     # Check that only one record exists for this URL
-    repo_count = session.query(Repository).filter_by(url=metadata1["url"]).count()
+    repo_count = session.query(DBRepository).filter_by(url=metadata1["url"]).count()
     assert repo_count == 1
     session.close()
 
@@ -378,7 +379,7 @@ def test_check_test_directories_exists(mock_github):
     mock_contents_response = [mock_tests_dir, mock_src_dir] 
     mock_repo.get_contents.return_value = mock_contents_response
     mock_github.return_value.get_repo.return_value = mock_repo
-    
+
     client = GitHubClient(token="test_token")
     assert client.check_test_directories("owner/repo") is True
     mock_github.return_value.get_repo.assert_called_once_with("owner/repo")
@@ -454,7 +455,7 @@ def test_check_test_files_root(mock_github):
     """Test detection of test files at root."""
     mock_repo = MagicMock()
     # mock_test_file = MagicMock(name="test_example.py", type="file") # This is how it should be
-    
+
     def get_contents_side_effect_root(path):
         if path == "":
             file_mock = MagicMock()
@@ -463,7 +464,7 @@ def test_check_test_files_root(mock_github):
             return [file_mock]
         else: 
             raise GithubException(status=404, data={"message": "Not Found"}, headers=None)
-    
+
     mock_repo.get_contents.side_effect = get_contents_side_effect_root
     mock_github.return_value.get_repo.return_value = mock_repo
     client = GitHubClient(token="test_token") #
@@ -473,7 +474,7 @@ def test_check_test_files_root(mock_github):
 def test_check_test_files_src(mock_github):
     """Test detection of test files under src/."""
     mock_repo = MagicMock()
-    
+
     def get_contents_side_effect_src(path):
         mock_src_dir_item = MagicMock(name="src", type="dir") #
         if path == "":
@@ -485,7 +486,7 @@ def test_check_test_files_src(mock_github):
             return [file_mock_in_src]
         else: 
             raise GithubException(status=404, data={"message": "Not Found"}, headers=None)
-            
+
     mock_repo.get_contents.side_effect = get_contents_side_effect_src
     mock_github.return_value.get_repo.return_value = mock_repo
     client = GitHubClient(token="test_token") #
@@ -506,7 +507,7 @@ def test_check_test_files_test_dir(mock_github):
             return [file_mock_in_tests]
         else: 
             raise GithubException(status=404, data={"message": "Not Found"}, headers=None)
-            
+
     mock_repo.get_contents.side_effect = get_contents_side_effect_test_dir
     mock_github.return_value.get_repo.return_value = mock_repo
     client = GitHubClient(token="test_token") #
@@ -627,7 +628,7 @@ def test_flag_missing_tests_all_present(mock_github):
 
     client = GitHubClient(token="test_token", db_url="sqlite:///:memory:")
     missing = client.flag_missing_tests("owner/repo_all_present")
-    
+
     # Assert that ALL flags are False (meaning nothing is missing)
     assert not missing["test_directories"], "Test directories should be present"
     assert not missing["test_files"], "Test files should be present"
@@ -660,7 +661,7 @@ def test_store_missing_tests_new_repo(mock_github, caplog):
 
     with caplog.at_level("ERROR"):
         client.store_missing_tests(repo_full_name, missing_flags)
-    
+
     # Verify error logged because repo is not in DB
     expected_log_message = f"Repository {repo_full_name} not found in DB. Flags cannot be updated. Ensure metadata is stored first."
     assert any(expected_log_message in record.message for record in caplog.records), \
@@ -668,8 +669,8 @@ def test_store_missing_tests_new_repo(mock_github, caplog):
 
     # Verify no repository was created in the DB by this call
     session = Session(bind=client.engine)
-    repo_count = session.query(Repository).filter(
-        (Repository.name == repo_simple_name) & (Repository.url.like(f"%/{repo_full_name}"))
+    repo_count = session.query(DBRepository).filter(
+        (DBRepository.name == repo_simple_name) & (DBRepository.url.like(f"%/{repo_full_name}"))
     ).count()
     assert repo_count == 0, "Repository should not have been created by store_missing_tests if not found."
     session.close()
@@ -677,7 +678,7 @@ def test_store_missing_tests_new_repo(mock_github, caplog):
 def test_store_missing_tests_existing_repo(mock_github):
     """Test store_missing_tests updates flags for an existing repository."""
     client = GitHubClient(token="test_token", db_url="sqlite:///:memory:")
-    
+
     repo_full_name = "owner/existing-repo"
     repo_url = f"https://github.com/{repo_full_name}"
     initial_metadata = {
@@ -690,10 +691,10 @@ def test_store_missing_tests_existing_repo(mock_github):
     }
     # Pre-populate the database with this repo
     client.store_repository_metadata(initial_metadata, initial_missing)
-    
+
     # Fetch the initial scan time *before* the next update
     session_for_initial_time = Session(bind=client.engine)
-    repo_after_first_store = session_for_initial_time.query(Repository).filter_by(url=repo_url).first()
+    repo_after_first_store = session_for_initial_time.query(DBRepository).filter_by(url=repo_url).first()
     initial_scan_time_from_db = repo_after_first_store.last_scanned_at
     session_for_initial_time.close()
 
@@ -711,15 +712,15 @@ def test_store_missing_tests_existing_repo(mock_github):
     client.store_missing_tests(repo_full_name, updated_missing_flags)
 
     session = Session(bind=client.engine)
-    updated_repo_db = session.query(Repository).filter_by(url=repo_url).first()
-    
+    updated_repo_db = session.query(DBRepository).filter_by(url=repo_url).first()
+
     assert updated_repo_db is not None
     assert updated_repo_db.missing_test_directories is True
     assert updated_repo_db.missing_test_files is True
     assert updated_repo_db.missing_test_config_files is True
     assert updated_repo_db.missing_cicd_configs is True
     assert updated_repo_db.missing_readme_mentions is True
-    
+
     # Check that last_scanned_at was updated by store_missing_tests
     assert updated_repo_db.last_scanned_at > initial_scan_time_from_db, \
         f"Expected last_scanned_at to update. Initial: {initial_scan_time_from_db}, Final: {updated_repo_db.last_scanned_at}"
@@ -753,7 +754,7 @@ def test_retry_on_failure_max_retries():
 def test_client_retry_on_api_calls(mock_github):
     """Test that client methods use retry decorator."""
     client = GitHubClient(token="test_token", db_url="sqlite:///:memory:")
-    
+
     # Test get_rate_limit
     mock_github.return_value.get_rate_limit.side_effect = [
         GithubException(404, "Not found"),
@@ -774,16 +775,16 @@ def test_client_retry_on_api_calls(mock_github):
 def test_get_recently_scanned_repos(mock_github):
     """Test that get_recently_scanned_repos returns correct repository URLs."""
     client = GitHubClient(token="test_token", db_url="sqlite:///:memory:")
-    
+
     session = Session(bind=client.engine)
     now = datetime.utcnow()
-    
+
     repo1_url = "https://github.com/owner/repo1"
     repo2_url = "https://github.com/owner/repo2"
     repo3_url = "https://github.com/owner/repo3"
 
     # Add new timestamp fields to Repository instantiation
-    repo1 = Repository(
+    repo1 = DBRepository(
         name="repo1", description="Test repo 1", star_count=100, url=repo1_url,
         language="python", missing_test_directories=False, missing_test_files=False,
         missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
@@ -792,7 +793,7 @@ def test_get_recently_scanned_repos(mock_github):
         last_metadata_update_time=now - timedelta(days=1),
         creation_time=now - timedelta(days=365)
     )
-    repo2 = Repository(
+    repo2 = DBRepository(
         name="repo2", description="Test repo 2", star_count=200, url=repo2_url,
         language="python", missing_test_directories=True, missing_test_files=True,
         missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
@@ -801,7 +802,7 @@ def test_get_recently_scanned_repos(mock_github):
         last_metadata_update_time=now - timedelta(days=31),
         creation_time=now - timedelta(days=400)
     )
-    repo3 = Repository( # Another recently scanned repo
+    repo3 = DBRepository( # Another recently scanned repo
         name="repo3", description="Test repo 3", star_count=50, url=repo3_url,
         language="javascript", missing_test_directories=False, missing_test_files=False,
         missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
@@ -810,25 +811,25 @@ def test_get_recently_scanned_repos(mock_github):
         last_metadata_update_time=now - timedelta(days=5),
         creation_time=now - timedelta(days=200)
     )
-    
+
     session.add_all([repo1, repo2, repo3])
     session.commit()
     session.close()
-    
+
     # Test getting all scanned repo URLs (days=None)
     all_repo_urls = client.get_recently_scanned_repos(days=None)
     assert len(all_repo_urls) == 3
     assert repo1_url in all_repo_urls
     assert repo2_url in all_repo_urls
     assert repo3_url in all_repo_urls
-    
+
     # Test getting repo URLs scanned in last 30 days
     recent_repo_urls = client.get_recently_scanned_repos(days=30)
     assert len(recent_repo_urls) == 2, f"Expected 2 recent repos, got {len(recent_repo_urls)}: {recent_repo_urls}"
     assert repo1_url in recent_repo_urls
     assert repo3_url in recent_repo_urls
     assert repo2_url not in recent_repo_urls
-    
+
     # Test getting repo URLs scanned in last 40 days
     older_repo_urls = client.get_recently_scanned_repos(days=40)
     assert len(older_repo_urls) == 3
@@ -857,31 +858,31 @@ def test_get_processed_star_counts(mock_github):
     session = Session(bind=client.engine)
 
     # Add some repositories with different star counts
-    repo1 = Repository(name="repo1", url="url1", star_count=100, last_scanned_at=datetime.utcnow(),
+    repo1 = DBRepository(name="repo1", url="url1", star_count=100, last_scanned_at=datetime.utcnow(),
                        missing_test_directories=False, missing_test_files=False, 
                        missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
                        last_push_time=datetime.utcnow() - timedelta(days=1), 
                        last_metadata_update_time=datetime.utcnow() - timedelta(days=1), 
                        creation_time=datetime.utcnow() - timedelta(days=10))
-    repo2 = Repository(name="repo2", url="url2", star_count=200, last_scanned_at=datetime.utcnow(),
+    repo2 = DBRepository(name="repo2", url="url2", star_count=200, last_scanned_at=datetime.utcnow(),
                        missing_test_directories=False, missing_test_files=False, 
                        missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
                        last_push_time=datetime.utcnow() - timedelta(days=2), 
                        last_metadata_update_time=datetime.utcnow() - timedelta(days=2), 
                        creation_time=datetime.utcnow() - timedelta(days=20))
-    repo3 = Repository(name="repo3", url="url3", star_count=100, last_scanned_at=datetime.utcnow(), # Duplicate star count
+    repo3 = DBRepository(name="repo3", url="url3", star_count=100, last_scanned_at=datetime.utcnow(), # Duplicate star count
                        missing_test_directories=False, missing_test_files=False, 
                        missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
                        last_push_time=datetime.utcnow() - timedelta(days=3), 
                        last_metadata_update_time=datetime.utcnow() - timedelta(days=3), 
                        creation_time=datetime.utcnow() - timedelta(days=30))
-    repo4 = Repository(name="repo4", url="url4", star_count=50, last_scanned_at=datetime.utcnow(),
+    repo4 = DBRepository(name="repo4", url="url4", star_count=50, last_scanned_at=datetime.utcnow(),
                        missing_test_directories=False, missing_test_files=False, 
                        missing_test_config_files=False, missing_cicd_configs=False, missing_readme_mentions=False,
                        last_push_time=datetime.utcnow() - timedelta(days=4), 
                        last_metadata_update_time=datetime.utcnow() - timedelta(days=4), 
                        creation_time=datetime.utcnow() - timedelta(days=40))
-    
+
     session.add_all([repo1, repo2, repo3, repo4])
     session.commit()
 
@@ -889,7 +890,7 @@ def test_get_processed_star_counts(mock_github):
     assert processed_stars == [50, 100, 200]
 
     # Test with an empty database
-    session.query(Repository).delete()
+    session.query(DBRepository).delete()
     session.commit()
     processed_stars_empty = client.get_processed_star_counts()
     assert processed_stars_empty == []
@@ -901,7 +902,7 @@ def setup_good_rate_limit_mock(mock_github_instance):
     mock_rate_limit_core.remaining = 100 # Good number of remaining calls
     mock_rate_limit_core.limit = 5000
     mock_rate_limit_core.reset = datetime.utcnow() + timedelta(hours=1)
-    
+
     mock_rate_limit_response = MagicMock()
     mock_rate_limit_response.core = mock_rate_limit_core
     mock_github_instance.get_rate_limit.return_value = mock_rate_limit_response 

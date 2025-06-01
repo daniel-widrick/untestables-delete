@@ -37,14 +37,14 @@ def analyzer_service(mock_config):
 def test_calculate_missing_ranges_no_processed_stars(analyzer_service, mock_config):
     """Test gap calculation when no stars have been processed yet."""
     analyzer_service.github_client.get_processed_star_counts = MagicMock(return_value=[])
-    
+
     expected_gaps = []
     current_min = mock_config.abs_min_stars
     while current_min <= mock_config.abs_max_stars:
         chunk_end = min(current_min + mock_config.default_chunk_size - 1, mock_config.abs_max_stars)
         expected_gaps.append((current_min, chunk_end))
         current_min = chunk_end + 1
-        
+
     gaps = analyzer_service.calculate_missing_ranges()
     assert gaps == expected_gaps
 
@@ -52,7 +52,7 @@ def test_calculate_missing_ranges_all_stars_processed(analyzer_service, mock_con
     """Test gap calculation when all stars in the range are already processed."""
     processed = list(range(mock_config.abs_min_stars, mock_config.abs_max_stars + 1))
     analyzer_service.github_client.get_processed_star_counts = MagicMock(return_value=processed)
-    
+
     gaps = analyzer_service.calculate_missing_ranges()
     assert gaps == []
 
@@ -74,7 +74,7 @@ def test_calculate_missing_ranges_edge_cases(analyzer_service, mock_config):
     """Test with edge cases like processed stars outside configured range."""
     processed = [10, 20, mock_config.abs_min_stars -10, mock_config.abs_max_stars + 10, 600]
     analyzer_service.github_client.get_processed_star_counts = MagicMock(return_value=processed)
-    
+
     expected_gaps = []
     current_min = mock_config.abs_min_stars
     while current_min <= mock_config.abs_max_stars:
@@ -205,7 +205,7 @@ def test_select_next_gap_with_available_gaps(analyzer_service):
     """Test that select_next_gap returns the first available gap."""
     mock_gaps = [(10, 20), (30, 40), (50, 60)]
     analyzer_service.calculate_missing_ranges = MagicMock(return_value=mock_gaps)
-    
+
     selected_gap = analyzer_service.select_next_gap()
     assert selected_gap == mock_gaps[0]
     analyzer_service.calculate_missing_ranges.assert_called_once()
@@ -213,7 +213,7 @@ def test_select_next_gap_with_available_gaps(analyzer_service):
 def test_select_next_gap_no_gaps_available(analyzer_service):
     """Test that select_next_gap returns None when no gaps are available."""
     analyzer_service.calculate_missing_ranges = MagicMock(return_value=[])
-    
+
     selected_gap = analyzer_service.select_next_gap()
     assert selected_gap is None
     analyzer_service.calculate_missing_ranges.assert_called_once()
@@ -223,7 +223,7 @@ def test_select_next_gap_uses_calculate_missing_ranges_output(analyzer_service, 
     processed = list(range(100,150)) + list(range(200,250)) + list(range(300,350)) + list(range(400,450)) + [500]
     analyzer_service.github_client.get_processed_star_counts = MagicMock(return_value=processed)
     analyzer_service.config = mock_config # Ensure it uses the base mock_config for this test
-    
+
     expected_first_gap = (150, 199)
     selected_gap = analyzer_service.select_next_gap()
     assert selected_gap == expected_first_gap
@@ -337,7 +337,7 @@ def test_handle_scan_result_success(analyzer_service):
     with patch('untestables.analyzer.logger.info') as mock_logger_info, \
          patch('untestables.analyzer.logger.debug') as mock_logger_debug: # Patch debug as well
         analyzer_service.handle_scan_result(0, "Output data", "", (100, 200))
-        
+
         mock_logger_info.assert_any_call("Handling scan result for range (100, 200). Exit code: 0")
         mock_logger_info.assert_any_call("Scan of range (100, 200) completed successfully.")
         mock_logger_debug.assert_any_call("Current partial completion signal detection is not implemented beyond exit code analysis.")
@@ -348,7 +348,7 @@ def test_handle_scan_result_failure(analyzer_service):
          patch('untestables.analyzer.logger.warning') as mock_logger_warning, \
          patch('untestables.analyzer.logger.debug') as mock_logger_debug:
         analyzer_service.handle_scan_result(1, "", "Error on scan", (300, 400))
-        
+
         mock_logger_info.assert_any_call("Handling scan result for range (300, 400). Exit code: 1")
         mock_logger_warning.assert_any_call("Scan of range (300, 400) failed or reported errors. Exit code: 1")
         mock_logger_debug.assert_any_call("Current partial completion signal detection is not implemented beyond exit code analysis.")
@@ -359,7 +359,7 @@ def test_handle_scan_result_potential_partial_completion_signal(analyzer_service
          patch('untestables.analyzer.logger.warning') as mock_logger_warning, \
          patch('untestables.analyzer.logger.debug') as mock_logger_debug:
         analyzer_service.handle_scan_result(2, "Processed some, then rate limited", "", (500, 600))
-        
+
         mock_logger_info.assert_any_call("Handling scan result for range (500, 600). Exit code: 2")
         mock_logger_warning.assert_any_call("Scan of range (500, 600) failed or reported errors. Exit code: 2")
         mock_logger_debug.assert_any_call("Current partial completion signal detection is not implemented beyond exit code analysis.")
@@ -369,11 +369,11 @@ def test_analyzer_service_init_logging(mock_config): # mock_config already sets 
     with patch('untestables.analyzer.get_config', return_value=mock_config) as mock_get_config, \
          patch('untestables.analyzer.logger.info') as mock_logger_info, \
          patch('untestables.analyzer.GitHubClient'): 
-        
+
         service = AnalyzerService() 
 
         mock_get_config.assert_called_once()
-        
+
         expected_log_calls = [
             "AnalyzerService initialized with configuration:",
             f"  Absolute Min Stars: {mock_config.abs_min_stars}",
@@ -381,7 +381,7 @@ def test_analyzer_service_init_logging(mock_config): # mock_config already sets 
             f"  Default Chunk Size: {mock_config.default_chunk_size}",
             f"  Scanner Command: {mock_config.scanner_command}" 
         ]
-        
+
         actual_log_messages = [call_args[0][0] for call_args in mock_logger_info.call_args_list]
 
         for expected_msg in expected_log_calls:
@@ -415,10 +415,10 @@ def test_run_orchestration_cycle_with_gaps_success(analyzer_service, mock_config
 
         assert result is True
         analyzer_service.select_next_gap.assert_called_once()
-        analyzer_service.construct_scanner_command.assert_called_once_with(test_gap[0], test_gap[1])
+        analyzer_service.construct_scanner_command.assert_called_once_with(test_gap[0], test_gap[1], end_time_iso=None)
         analyzer_service.execute_scanner_command_with_output.assert_called_once_with(scanner_cmd_str)
         analyzer_service.handle_scan_result.assert_called_once_with(0, "Scan successful", "", test_gap)
-        
+
         # Check for key log messages from the orchestration cycle itself
         mock_module_logger_info.assert_any_call("Starting new scanner orchestration cycle...")
         mock_module_logger_info.assert_any_call(f"Processing selected gap: {test_gap[0]}-{test_gap[1]}")
@@ -441,7 +441,7 @@ def test_run_orchestration_cycle_with_gaps_failure(analyzer_service, mock_config
 
         assert result is True 
         analyzer_service.select_next_gap.assert_called_once()
-        analyzer_service.construct_scanner_command.assert_called_once_with(test_gap[0], test_gap[1])
+        analyzer_service.construct_scanner_command.assert_called_once_with(test_gap[0], test_gap[1], end_time_iso=None)
         analyzer_service.execute_scanner_command_with_output.assert_called_once_with(scanner_cmd_str)
         analyzer_service.handle_scan_result.assert_called_once_with(1, "", "Scan failed", test_gap)
 
