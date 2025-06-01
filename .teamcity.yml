@@ -1,21 +1,9 @@
 jobs:
   test:
     name: Run Tests
-    runs-on: Linux-Medium
+    runs-on: Linux-Small
     steps:
       - type: script
-        name: Setup Python & Poetry
-        script-content: |-
-          apt install python-pipx && \
-              pipx ensurepath
-
-          pipx install poetry && \
-              poetry config virtualenvs.create true && \
-              poetry config virtualenvs.in-project true && \
-              poetry install --no-interaction --no-ansi --no-root
-      - type: script
-        name: path
-        script-content: |-
-          echo $PATH
-          which python
-          pwd
+        dockerfile-path: ./tests.Dockerfile
+        name: Run Tests
+        script-content: poetry run tests
