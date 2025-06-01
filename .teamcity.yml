@@ -6,8 +6,7 @@ jobs:
       - type: script
         name: Setup Python & Poetry
         script-content: |-
-          python -m pip install --upgrade pip && \
-              python -m pip install pipx && \
+          apt install python-pipx && \
               pipx ensurepath
 
           pipx install poetry && \
