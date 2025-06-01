@@ -3,26 +3,20 @@ jobs:
     name: Run Tests
     runs-on: Linux-Medium
     steps:
-      - name: Checkout
-        uses: checkout
+      - type: script
+        name: Setup Python & Poetry
+        script-content: |-
+          python -m pip install --upgrade pip && \
+              python -m pip install pipx && \
+              pipx ensurepath
 
-      - name: Set up Python 3.11
-        uses: python
-        with:
-          version: '3.11'
-
-      - name: Install Poetry
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 -
-          export PATH="$HOME/.local/bin:$PATH"
-          poetry --version
-
-      - name: Install dependencies
-        run: |
-          export PATH="$HOME/.local/bin:$PATH"
-          poetry install --with dev
-
-      - name: Run tests
-        run: |
-          export PATH="$HOME/.local/bin:$PATH"
-          poetry run tests
+          pipx install poetry && \
+              poetry config virtualenvs.create true && \
+              poetry config virtualenvs.in-project true && \
+              poetry install --no-interaction --no-ansi --no-root
+      - type: script
+        name: path
+        script-content: |-
+          echo $PATH
+          which python
+          pwd
