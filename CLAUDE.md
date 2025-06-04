@@ -12,8 +12,13 @@ poetry run pytest  # Runs with coverage automatically
 
 ### Running the Application
 ```bash
+# CLI Commands
 poetry run untestables find-repos --min-stars 5 --max-stars 1000  # Search for repos
 poetry run untestables scan --duration 7d  # Run orchestrator for 7 days
+
+# API Server
+poetry run uvicorn untestables.api.main:app --reload  # Start API server
+# Or use docker-compose up api
 ```
 
 ### Database Migrations
@@ -43,6 +48,10 @@ Untestables identifies Python repositories on GitHub that lack unit tests. It sy
 **Analyzer Service (`analyzer.py`)**: Identifies unprocessed star ranges, breaks them into chunks, and executes scanner commands. Handles orchestration and gap detection.
 
 **Database Model (`github/models.py`)**: Repository table tracks metadata, test indicators (5 boolean flags), and timestamps. Uses SQLAlchemy with Alembic migrations.
+
+**FastAPI Service (`api/main.py`)**: RESTful API for managing scan tasks asynchronously. Provides endpoints for creating scans, monitoring progress, and viewing gaps. Uses Postgres for task queue management.
+
+**Task Executor (`api/task_executor.py`)**: Background task processing engine that executes scan commands via subprocess and tracks progress in database.
 
 ### Key Patterns
 
