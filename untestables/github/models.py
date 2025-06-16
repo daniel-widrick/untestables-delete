@@ -23,6 +23,7 @@ class Repository(Base):
     last_push_time = Column(DateTime, nullable=True)
     last_metadata_update_time = Column(DateTime, nullable=True)
     creation_time = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, nullable=True, default=True)  # Track if the repository is still active
 
     def __repr__(self):
         return f"<Repository(name='{self.name}', url='{self.url}', last_scanned_at='{self.last_scanned_at}')>" 

@@ -100,7 +100,7 @@ async def health_check(db: Session = Depends(get_db)):
     try:
         # Check database connection
         db.execute("SELECT 1")
-        
+
         # Get task statistics
         total_tasks = db.query(func.count(ScanTask.id)).scalar()
         pending_tasks = db.query(func.count(ScanTask.id)).filter(
@@ -109,7 +109,7 @@ async def health_check(db: Session = Depends(get_db)):
         running_tasks = db.query(func.count(ScanTask.id)).filter(
             ScanTask.status == "running"
         ).scalar()
-        
+
         return {
             "status": "healthy",
             "database": "connected",
@@ -146,11 +146,11 @@ async def create_scan_task(
             "rescan_days": request.rescan_days
         }
     )
-    
+
     db.add(task)
     db.commit()
     db.refresh(task)
-    
+
     # Add to background tasks
     background_tasks.add_task(
         task_executor.execute_scan_task,
@@ -160,7 +160,7 @@ async def create_scan_task(
         force_rescan=request.force_rescan,
         rescan_days=request.rescan_days
     )
-    
+
     return TaskResponse(**task.to_dict())
 
 
@@ -171,17 +171,17 @@ async def get_gaps(
 ):
     """Get current gaps in star range coverage."""
     from untestables.analyzer import AnalyzerService
-    
+
     analyzer = AnalyzerService()
     gaps = analyzer.find_gaps()
-    
+
     # Filter by minimum size if specified
     if min_size:
         gaps = [g for g in gaps if (g["max_stars"] - g["min_stars"]) >= min_size]
-    
+
     # Limit results
     gaps = gaps[:limit]
-    
+
     return [
         GapResponse(
             min_stars=gap["min_stars"],
@@ -202,18 +202,18 @@ async def list_tasks(
 ):
     """List tasks with optional filtering."""
     query = db.query(ScanTask)
-    
+
     if status:
         query = query.filter(ScanTask.status == status)
     if task_type:
         query = query.filter(ScanTask.task_type == task_type)
-    
+
     # Order by created_at descending (newest first)
     query = query.order_by(ScanTask.created_at.desc())
-    
+
     # Apply pagination
     tasks = query.offset(offset).limit(limit).all()
-    
+
     return [TaskResponse(**task.to_dict()) for task in tasks]
 
 
@@ -224,10 +224,10 @@ async def get_task_status(
 ):
     """Get status of a specific task."""
     task = db.query(ScanTask).filter(ScanTask.id == task_id).first()
-    
+
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
     return TaskResponse(**task.to_dict())
 
 
@@ -238,48 +238,59 @@ async def cancel_task(
 ):
     """Cancel a pending or running task."""
     task = db.query(ScanTask).filter(ScanTask.id == task_id).first()
-    
+
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
     if task.status not in ["pending", "running"]:
         raise HTTPException(
             status_code=400,
             detail=f"Cannot cancel task in status: {task.status}"
         )
-    
+
     # Update task status
     task.status = "cancelled"
     task.completed_at = datetime.utcnow()
     db.commit()
-    
+
     return {"message": "Task cancelled", "task_id": task_id}
 
 
 @app.get("/stats/repositories")
-async def get_repository_stats(db: Session = Depends(get_db)):
+async def get_repository_stats(db: Session = Depends(get_db), include_inactive: bool = False):
     """Get statistics about scanned repositories."""
     from untestables.github.models import Repository
-    
-    total_repos = db.query(func.count(Repository.id)).scalar()
-    repos_without_tests = db.query(func.count(Repository.id)).filter(
+
+    # Base query that can filter by active status
+    base_query = db.query(Repository)
+    if not include_inactive:
+        base_query = base_query.filter(Repository.is_active == True)
+
+    total_repos = base_query.count()
+    repos_without_tests = base_query.filter(
         Repository.missing_test_directory == True,
         Repository.missing_test_files == True,
         Repository.missing_test_config == True,
         Repository.missing_ci_config == True,
         Repository.missing_readme_mention == True
-    ).scalar()
-    
+    ).count()
+
     # Get star distribution
-    star_distribution = db.query(
+    star_query = db.query(
         func.floor(Repository.star_count / 100) * 100,
         func.count(Repository.id)
-    ).group_by(
+    )
+
+    # Apply the same active filter to star distribution
+    if not include_inactive:
+        star_query = star_query.filter(Repository.is_active == True)
+
+    star_distribution = star_query.group_by(
         func.floor(Repository.star_count / 100)
     ).order_by(
         func.floor(Repository.star_count / 100)
     ).all()
-    
+
     return {
         "total_repositories": total_repos,
         "repositories_without_tests": repos_without_tests,
@@ -315,17 +326,17 @@ async def start_orchestration(
             "duration_hours": duration_hours
         }
     )
-    
+
     db.add(task)
     db.commit()
-    
+
     # Add to background tasks
     background_tasks.add_task(
         task_executor.execute_orchestration,
         task_id=task_id,
         duration_hours=duration_hours
     )
-    
+
     return {
         "task_id": task_id,
         "message": f"Orchestration started for {duration_hours} hours"
